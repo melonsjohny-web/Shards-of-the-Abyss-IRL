@@ -1,23 +1,17 @@
 package com.example.viewmodel
 
-import android.annotation.SuppressLint
 import android.content.Context
-import android.location.Location
-import android.os.Looper
-import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.*
 import com.example.domain.*
-import com.google.android.gms.location.*
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.Serializable
-import kotlin.math.*
+import kotlin.math.min
 import kotlin.random.Random
 
 // Sealed state for the overall game structure
@@ -61,48 +55,38 @@ class GameViewModel(
     private val repository: GameRepository
 ) : ViewModel() {
 
-    // Current menu screen: "MAP", "PARTY", "FORGE", "SUMMON", "GUILD", "CAMPAIGN", "SETTINGS"
+    // Current menu screen: "MAP", "PARTY", "FORGE", "SUMMON", "GUILD", "SETTINGS"
     private val _currentTab = MutableStateFlow("MAP")
     val currentTab: StateFlow<String> = _currentTab.asStateFlow()
 
-    // Real vs Virtual GPS Tracker
-    private val _isRealGpsEnabled = MutableStateFlow(false)
-    val isRealGpsEnabled: StateFlow<Boolean> = _isRealGpsEnabled.asStateFlow()
+    // Sub-viewmodels split for modularity
+    val mapViewModel = MapViewModel(context, repository, viewModelScope, ::showToast)
+    val combatViewModel = CombatViewModel(repository, viewModelScope, ::showToast)
+    val forgeViewModel = ForgeViewModel(repository, viewModelScope, ::showToast)
 
-    // Environment/Weather properties
-    private val _currentWeather = MutableStateFlow(WeatherCondition.CLEAR)
-    val currentWeather: StateFlow<WeatherCondition> = _currentWeather.asStateFlow()
+    // Delegated state flows
+    val isRealGpsEnabled: StateFlow<Boolean> = mapViewModel.isRealGpsEnabled
+    val currentWeather: StateFlow<WeatherCondition> = mapViewModel.currentWeather
+    val isNight: StateFlow<Boolean> = mapViewModel.isNight
+    val activeBattle: StateFlow<ActiveBattleState?> = combatViewModel.activeBattle
 
-    private val _isNight = MutableStateFlow(false)
-    val isNight: StateFlow<Boolean> = _isNight.asStateFlow()
-
-    // Active screen feedback message
+    // Feedback toast messages
     private val _feedbackMessage = MutableStateFlow<String?>(null)
-
-    // Primary state flows merged from DB
-    private val _activeBattle = MutableStateFlow<ActiveBattleState?>(null)
-    val activeBattle: StateFlow<ActiveBattleState?> = _activeBattle.asStateFlow()
 
     // Standard hourly etheric count for offline dungeons
     private val _remainingEtherDungeons = MutableStateFlow(10)
     val remainingEtherDungeons: StateFlow<Int> = _remainingEtherDungeons.asStateFlow()
 
-    // Timer jobs
-    private val fuzzerJob: Job
-    private val battleTickerJob: Job
-    private var fusedLocationClient: FusedLocationProviderClient? = null
-    private var locationCallback: LocationCallback? = null
-
-    // Main combined UI State
+    // Combined overall state
     val uiState: StateFlow<GameUiState> = combine(
         repository.profileFlow,
         repository.allHeroesFlow,
         repository.allGearFlow,
         repository.allPOIsFlow,
         repository.allGuildsFlow,
-        _currentWeather,
-        _isNight,
-        _activeBattle,
+        currentWeather,
+        isNight,
+        activeBattle,
         _feedbackMessage
     ) { array ->
         val profile = array[0] as? GameProfileEntity
@@ -137,56 +121,26 @@ class GameViewModel(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), GameUiState.LaunchSelection)
 
     init {
-        // Automatically check if day or night according to Android phone time
-        val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
-        _isNight.value = hour < 6 || hour >= 18
-
-        // Start weather auto-rotator simulating real changing outdoor factors
-        fuzzerJob = viewModelScope.launch {
-            while (true) {
-                delay(300000) // change weather every 5 mins
-                cycleWeather()
-            }
-        }
-
-        // Action point battle incremental clock
-        battleTickerJob = viewModelScope.launch {
-            while (true) {
-                delay(100)
-                tickBattleTimer()
-            }
-        }
-
-        // Initialize GPS client
-        fusedLocationClient = LocationServices.getFusedLocationProviderClient(context)
-    }
-
-    private fun cycleWeather() {
-        val nextWeather = WeatherCondition.entries.random()
-        _currentWeather.value = nextWeather
-        viewModelScope.launch {
-            val prof = repository.getProfileSync()
-            if (prof != null) {
-                showToast("Погода за окном изменилась: ${nextWeather.title}!")
+        // Start Combat Battle Timer thread with weather-boosting check callback
+        combatViewModel.startTicker { elem ->
+            val cw = mapViewModel.currentWeather.value
+            when (cw) {
+                WeatherCondition.CLEAR -> elem == Element.AETHER
+                WeatherCondition.SNOWY -> elem == Element.ICE
+                WeatherCondition.RAIN -> elem == Element.ICE || elem == Element.BLOOM
+                WeatherCondition.HOT_WAVE -> elem == Element.BLAZE
+                WeatherCondition.FOGGY -> elem == Element.MIST
+                WeatherCondition.WINDY -> elem == Element.MIST
             }
         }
     }
 
-    fun toggleNightMode() {
-        _isNight.value = !_isNight.value
-        showToast("Смена времени суток: ${if (_isNight.value) "🌙 Ночь Бездны" else "☀️ Солнечный День"}")
-    }
-
-    fun toggleWeatherSimulation() {
-        val nextIndex = (currentWeather.value.ordinal + 1) % WeatherCondition.entries.size
-        _currentWeather.value = WeatherCondition.entries[nextIndex]
-        showToast("Новая аура погоды: ${currentWeather.value.title}")
-    }
-
+    // Tab control
     fun selectTab(tab: String) {
         _currentTab.value = tab
     }
 
+    // Feedback toast mechanism
     fun showToast(msg: String) {
         _feedbackMessage.value = msg
         viewModelScope.launch {
@@ -197,17 +151,16 @@ class GameViewModel(
         }
     }
 
-    // --- CHARACTER INCEPTION & COVENANT ---
+    // --- CHARACTER SELECT COVENANT ---
     fun selectStartingCovenant(element: Element) {
         viewModelScope.launch {
-            // Setup base profile
             val initialProfile = GameProfileEntity(
                 selectedElement = element,
                 level = 1,
                 xp = 0,
                 gold = 1000,
                 abyssalShards = 50,
-                currentLatitude = 55.7558,  // Default Moscow center coordinates
+                currentLatitude = 55.7558,
                 currentLongitude = 37.6173,
                 activeGuildName = "Первые Пробуждённые",
                 dailyDungeonsCleared = 0,
@@ -216,7 +169,6 @@ class GameViewModel(
             )
             repository.saveProfile(initialProfile)
 
-            // Setup 3 characters: Elemental leader + Aether recruit + alternate element
             val starterHero1 = AwakenedHero(
                 id = "hero_lead_${element.name.lowercase()}",
                 name = "${element.god} (Аватар)",
@@ -247,7 +199,6 @@ class GameViewModel(
 
             repository.saveHeroes(listOf(starterHero1, starterHero2))
 
-            // Provide starting equipment
             val weapon = GearItem(
                 id = "gear_init_weapon",
                 name = "Меч Инициации",
@@ -283,10 +234,8 @@ class GameViewModel(
 
             repository.saveGearItems(listOf(weapon, armor, ring))
 
-            // Initialize default surrounding GPS points
-            generateSurroundingPOIs(initialProfile.currentLatitude, initialProfile.currentLongitude)
+            mapViewModel.generateSurroundingPOIs(initialProfile.currentLatitude, initialProfile.currentLongitude)
 
-            // Add standard guilds to SQLite
             repository.saveGuild(GuildEntity("Вороны Смерти", 12, 18, 50000, 600, 3))
             repository.saveGuild(GuildEntity("Первые Пробуждённые", 8, 14, 25000, 250, 1))
             repository.saveGuild(GuildEntity("Орден Творцов", 15, 34, 120000, 2000, 8))
@@ -295,740 +244,37 @@ class GameViewModel(
         }
     }
 
-    // --- procedurual placement ---
-    private suspend fun generateSurroundingPOIs(lat: Double, lon: Double) {
-        val namesIce = listOf("Замёрзшая Расселина", "Алтарь Аурелии", "Холодные Врата Эфира")
-        val namesBloom = listOf("Цветущая Роща Мизу", "Сады Спокойствия", "Оазис Пробужденных")
-        val namesBlaze = listOf("Жертвенный Утес Герра", "Кузница Пепла", "Квартал Гнева Стихии")
-        val namesMist = listOf("Туманная Преграда", "Мост Потерянных Душ", "Мавзолей Ветров")
-        val namesAether = listOf("Узел Соединения Эфира", "Центральное Око Силы", "Осколочный Обелиск")
-
-        val newPois = mutableListOf<PointOfInterest>()
-        val types = PoiType.entries
-
-        // Generate 6 procedural landmarks around center lat/lon
-        for (i in 0 until 8) {
-            val type = types[i % types.size]
-            val element = Element.entries[i % Element.entries.size]
-            
-            // Randomly offset coordinates between 50m to 600m
-            val latOffset = (Random.nextDouble() - 0.5) * 0.006 // ~300m max
-            val lonOffset = (Random.nextDouble() - 0.5) * 0.010
-
-            val targetLat = lat + latOffset
-            val targetLon = lon + lonOffset
-
-            val rName = when (element) {
-                Element.ICE -> namesIce.random()
-                Element.BLOOM -> namesBloom.random()
-                Element.BLAZE -> namesBlaze.random()
-                Element.MIST -> namesMist.random()
-                Element.AETHER -> namesAether.random()
-            } + " (Ур. ${(i * 3) + 2})"
-
-            newPois.add(
-                PointOfInterest(
-                    id = "poi_proc_${i}_${System.currentTimeMillis() % 1000}",
-                    name = rName,
-                    type = type,
-                    element = element,
-                    latitude = targetLat,
-                    longitude = targetLon,
-                    minLevel = (i * 3) + 1,
-                    maxLevel = (i * 3) + 5,
-                    isCapturedByGuild = (i % 3 == 0),
-                    capturedGuildName = if (i % 3 == 0) "Орден Творцов" else null
-                )
-            )
-        }
-        repository.savePOIs(newPois)
-    }
-
-    // --- PLAY DEVICE OR SIMULATED INTERACTIVE NAVIGATION ---
-    fun toggleRealGpsTracker(enabled: Boolean) {
-        _isRealGpsEnabled.value = enabled
-        if (enabled) {
-            setupLocationListener()
-            showToast("Включена геолокация смартфона (GPS)")
-        } else {
-            removeLocationListener()
-            showToast("Активирован ручной контроллер перемещения")
-        }
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun setupLocationListener() {
-        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 8000)
-            .setWaitForAccurateLocation(false)
-            .setMinUpdateIntervalMillis(4000)
-            .build()
-
-        locationCallback = object : LocationCallback() {
-            override fun onLocationResult(result: LocationResult) {
-                val loc = result.lastLocation ?: return
-                updateProfileLocation(loc.latitude, loc.longitude)
-            }
-        }
-
-        try {
-            fusedLocationClient?.requestLocationUpdates(
-                request,
-                locationCallback!!,
-                Looper.getMainLooper()
-            )
-        } catch (e: Throwable) {
-            Log.e("Shards", "GPS request failed", e)
-            _isRealGpsEnabled.value = false
-            showToast("Ошибка GPS датчика. Проверьте разрешения!")
-        }
-    }
-
-    private fun removeLocationListener() {
-        locationCallback?.let {
-            try {
-                fusedLocationClient?.removeLocationUpdates(it)
-            } catch (e: Throwable) {
-                Log.e("Shards", "Failed to remove GPS listener", e)
-            }
-        }
-        locationCallback = null
-    }
-
-    // Move player in degrees (~100 meters per step)
-    fun triggerVirtualMove(dir: String) {
-        viewModelScope.launch {
-            val prof = repository.getProfileSync() ?: return@launch
-            var newLat = prof.currentLatitude
-            var newLon = prof.currentLongitude
-
-            val step = 0.0009 // approximate 100m
-            when (dir) {
-                "NORTH" -> newLat += step
-                "SOUTH" -> newLat -= step
-                "EAST" -> newLon += step * 1.2
-                "WEST" -> newLon -= step * 1.2
-            }
-
-            updateProfileLocation(newLat, newLon)
-            showToast("Прогулка: перемещение на ${translateDirection(dir)}")
-        }
-    }
-
-    private fun translateDirection(dir: String) = when (dir) {
-        "NORTH" -> "Север ⬆️"
-        "SOUTH" -> "Юг ⬇️"
-        "EAST" -> "Восток ➡️"
-        else -> "Запад ⬅️"
-    }
-
-    private fun updateProfileLocation(lat: Double, lon: Double) {
-        viewModelScope.launch {
-            val prof = repository.getProfileSync() ?: return@launch
-            val updated = prof.copy(currentLatitude = lat, currentLongitude = lon)
-            repository.saveProfile(updated)
-
-            // Let's decide if we clear and replenish spawned POIs when walked very far
-            val dist = calculateDistance(prof.currentLatitude, prof.currentLongitude, lat, lon)
-            if (dist > 1500f) {
-                generateSurroundingPOIs(lat, lon)
-                showToast("Вы обнаружили неизведанный сектор! Рождены новые разломы.")
-            }
-        }
-    }
-
-    // Distance in meters using Spherical law of cosines
+    // --- DELEGATED MAP METHODS ---
+    fun toggleNightMode() = mapViewModel.toggleNightMode()
+    fun toggleWeatherSimulation() = mapViewModel.toggleWeatherSimulation()
+    fun toggleRealGpsTracker(enabled: Boolean) = mapViewModel.toggleRealGpsTracker(enabled)
+    fun triggerVirtualMove(dir: String) = mapViewModel.triggerVirtualMove(dir)
     fun calculateDistance(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Float {
-        val r = 6371000.0 // Earth's radius in meters
-        val radLat1 = Math.toRadians(lat1)
-        val radLat2 = Math.toRadians(lat2)
-        val deltaLat = Math.toRadians(lat2 - lat1)
-        val deltaLon = Math.toRadians(lon2 - lon1)
-
-        val a = sin(deltaLat / 2) * sin(deltaLat / 2) +
-                cos(radLat1) * cos(radLat2) *
-                sin(deltaLon / 2) * sin(deltaLon / 2)
-        val c = 2 * atan2(sqrt(a), sqrt(1 - a))
-        return (r * c).toFloat()
+        return mapViewModel.calculateDistance(lat1, lon1, lat2, lon2)
     }
 
-
-    // --- COMBAT SYSTEM: TURN BASED PROCEDURAL SYSTEM ---
+    // --- DELEGATED COMBAT METHODS ---
     fun initiatePOICombat(poi: PointOfInterest) {
-        viewModelScope.launch {
-            val heroes = repository.getAllHeroesSync()
-            if (heroes.isEmpty()) {
-                showToast("У вас нет призванных героев! Активируйте призыв.")
-                return@launch
-            }
-
-            // Map up to 3 heroes to combat squad
-            val playerUnits = heroes.take(3).map { hero ->
-                // Calculate combat values including any equipped items
-                val gearValue = calculateGearBuffForHero(hero.id)
-                BattleUnit(
-                    uid = "player_${hero.id}",
-                    id = hero.id,
-                    name = hero.name,
-                    isHero = true,
-                    currentHp = hero.maxHp + gearValue.hp,
-                    maxHp = hero.maxHp + gearValue.hp,
-                    attack = hero.attack + gearValue.atk,
-                    defense = hero.defense + gearValue.def,
-                    speed = hero.speed + gearValue.spd,
-                    element = hero.element
-                )
-            }
-
-            // Create procedural enemy units based on POI level
-            val elements = Element.entries
-            val enemiesCount = if (poi.type == PoiType.ABYSSAL_GATE || poi.type == PoiType.NEXUS_POINT) 1 else Random.nextInt(2, 4)
-            val enemyUnits = (1..enemiesCount).map { i ->
-                val enemyElem = elements[(poi.element.ordinal + i) % elements.size]
-                val enemyLvl = Random.nextInt(poi.minLevel, poi.maxLevel + 1)
-                val health = 50 + enemyLvl * 15
-                val baseAtk = 8 + enemyLvl * 3
-                val baseDef = 4 + enemyLvl * 2
-                val velocity = 8 + enemyLvl
-
-                BattleUnit(
-                    uid = "enemy_${poi.id}_$i",
-                    id = "monster_$i",
-                    name = if (enemiesCount == 1) "🔥 Вожак Бездны (${poi.element.title})" else "Приспешник Хаоса №$i",
-                    isHero = false,
-                    currentHp = health,
-                    maxHp = health,
-                    attack = baseAtk,
-                    defense = baseDef,
-                    speed = velocity,
-                    element = enemyElem
-                )
-            }
-
-            val fullTurnList = mutableListOf<String>()
-            _activeBattle.value = ActiveBattleState(
-                poiId = poi.id,
-                poiName = poi.name,
-                poiType = poi.type,
-                element = poi.element,
-                playerUnits = playerUnits,
-                enemyUnits = enemyUnits,
-                turnOrder = fullTurnList,
-                activeUnitUid = null,
-                combatLog = listOf("Разлом открыт! Инициализация тактических полей воителей."),
-                qteState = CombatQteState(active = false)
-            )
-
-            _currentTab.value = "COMBAT_SCREEN"
-        }
+        // Prevent starting combat if there is already an active battle
+        if (combatViewModel.activeBattle.value != null) return
+        combatViewModel.initiatePOICombat(poi)
+        selectTab("COMBAT_SCREEN")
     }
 
-    private class StatPack(val hp: Int = 0, val atk: Int = 0, val def: Int = 0, val spd: Int = 0)
-
-    private suspend fun calculateGearBuffForHero(heroId: String): StatPack {
-        val gears = repository.getAllGearSync().filter { it.equippedHeroId == heroId }
-        var extraHp = 0
-        var extraAtk = 0
-        var extraDef = 0
-        var extraSpd = 0
-
-        for (g in gears) {
-            val powerBonus = g.basePower
-            when (g.slot) {
-                GearSlot.WEAPON -> extraAtk += powerBonus
-                GearSlot.HELMET -> extraHp += powerBonus * 3
-                GearSlot.ARMOR -> extraDef += powerBonus
-                GearSlot.GLOVES -> extraAtk += powerBonus / 2
-                GearSlot.BOOTS -> extraSpd += powerBonus / 5
-                GearSlot.AMULET -> extraHp += powerBonus * 2
-                else -> extraAtk += powerBonus / 3
-            }
-            // Check affixes
-            for (aff in g.affixes) {
-                when (aff.attribute) {
-                    "Сила" -> extraAtk += aff.value
-                    "ОЗ" -> extraHp += aff.value
-                    "Защита" -> extraDef += aff.value
-                    "Скорость" -> extraSpd += aff.value
-                }
-            }
-        }
-        return StatPack(extraHp, extraAtk, extraDef, extraSpd)
-    }
-
-    // Tick AP meters and trigger next move
-    private fun tickBattleTimer() {
-        val current = _activeBattle.value ?: return
-        if (current.isFinished || current.activeUnitUid != null) return
-
-        val pUnits = current.playerUnits
-        val eUnits = current.enemyUnits
-
-        // Charge AP based on Speed and current atmospheric conditions
-        for (unit in pUnits + eUnits) {
-            if (unit.currentHp <= 0) continue
-            // Standard AP increment
-            var increment = unit.speed * 0.1f
-
-            // Elemental condition check
-            val weatherCheck = isWeatherBoostingElement(unit.element)
-            if (weatherCheck) {
-                increment *= 1.25f // 25% faster AP in favorable environment
-            }
-
-            unit.currentActionPoints += increment
-        }
-
-        // Find unit with AP over threshold
-        val nextAct = (pUnits + eUnits).filter { it.currentHp > 0 && it.currentActionPoints >= 100f }
-            .maxByOrNull { it.currentActionPoints }
-
-        if (nextAct != null) {
-            nextAct.currentActionPoints = 0f
-            val updateLog = current.combatLog.toMutableList().apply {
-                add("Ход принадлежит: ${nextAct.name} (${nextAct.element.title})")
-            }
-
-            _activeBattle.value = current.copy(
-                activeUnitUid = nextAct.uid,
-                combatLog = updateLog
-            )
-
-            // If it is enemy's turn, trigger quick automated monster action after a short lag
-            if (!nextAct.isHero) {
-                viewModelScope.launch {
-                    delay(1200)
-                    triggerMonsterTurn(nextAct)
-                }
-            }
-        }
-    }
-
-    private fun isWeatherBoostingElement(elem: Element): Boolean {
-        val currentW = currentWeather.value
-        return when (currentW) {
-            WeatherCondition.CLEAR -> elem == Element.AETHER
-            WeatherCondition.SNOWY -> elem == Element.ICE
-            WeatherCondition.RAIN -> elem == Element.ICE || elem == Element.BLOOM
-            WeatherCondition.HOT_WAVE -> elem == Element.BLAZE
-            WeatherCondition.FOGGY -> elem == Element.MIST
-            WeatherCondition.WINDY -> elem == Element.MIST
-        }
-    }
-
-    // Execute Monster attacks and trigger player block Swipe QTE
-    private fun triggerMonsterTurn(monster: BattleUnit) {
-        val current = _activeBattle.value ?: return
-        if (current.isFinished) return
-
-        // Target a living hero
-        val livingHeroes = current.playerUnits.filter { it.currentHp > 0 }
-        if (livingHeroes.isEmpty()) {
-            resolveBattleFinish(victory = false)
-            return
-        }
-
-        val target = livingHeroes.random()
-        val directions = listOf("UP", "DOWN", "LEFT", "RIGHT")
-        val randomDir = directions.random()
-
-        // Init Block swipe QTE
-        _activeBattle.value = current.copy(
-            qteState = CombatQteState(
-                active = true,
-                type = QteType.BLOCK_SWIPE,
-                promptText = "Защита! Проведите Свайп: $randomDir",
-                targetDirection = randomDir,
-                timeLeftMs = 1200
-            )
-        )
-
-        // Give the player 1.2 seconds to hit block swipe
-        viewModelScope.launch {
-            delay(1200)
-            val checkQte = _activeBattle.value?.qteState ?: return@launch
-            executeMonsterAttackBlow(monster, target, blockSuccessful = checkQte.multiplier == 0f)
-        }
-    }
-
-    private fun executeMonsterAttackBlow(monster: BattleUnit, target: BattleUnit, blockSuccessful: Boolean) {
-        val current = _activeBattle.value ?: return
-        var damage = max(5, monster.attack - target.defense)
-
-        val logText = if (blockSuccessful) {
-            damage = 0
-            "🛡️ ${target.name} УСПЕШНО ОТРАЗИЛ атаку ${monster.name} Свайпом QTE!"
-        } else {
-            target.currentHp = max(0, target.currentHp - damage)
-            "💥 ${monster.name} КУСАЕТ ${target.name} за $damage ед. урона."
-        }
-
-        val log = current.combatLog.toMutableList()
-        log.add(logText)
-        if (target.currentHp <= 0) {
-            log.add("💀 Воин ${target.name} повержен!")
-        }
-
-        _activeBattle.value = current.copy(
-            activeUnitUid = null,
-            qteState = CombatQteState(active = false),
-            combatLog = log
-        )
-
-        checkBattleFinishConditions()
-    }
-
-    // Player action inputs
-    fun playerTriggerSkillAttack() {
-        val current = _activeBattle.value ?: return
-        val activeUid = current.activeUnitUid ?: return
-        val actor = current.playerUnits.find { it.uid == activeUid } ?: return
-
-        // Initiate Attack Shrinking Circle QTE
-        _activeBattle.value = current.copy(
-            qteState = CombatQteState(
-                active = true,
-                type = QteType.ATTACK_RING,
-                promptText = "🎯 ТАП в идеальной границе сужения кольца!",
-                timeLeftMs = 1500
-            )
-        )
-    }
-
-    fun playerFinishQTEHit(successRatio: Float) {
-        val current = _activeBattle.value ?: return
-        val activeUid = current.activeUnitUid ?: return
-        val actor = current.playerUnits.find { it.uid == activeUid } ?: return
-
-        val livingEnemies = current.enemyUnits.filter { it.currentHp > 0 }
-        if (livingEnemies.isEmpty()) {
-            checkBattleFinishConditions()
-            return
-        }
-
-        // Mult targets Boss or first living enemy
-        val target = livingEnemies.first()
-
-        // Double damage if timed perfectly
-        val qteMultiplier = when {
-            successRatio > 0.85f -> 2.0f
-            successRatio > 0.65f -> 1.5f
-            else -> 0.7f
-        }
-
-        val elementFactor = calculateElementalAdvantage(actor.element, target.element)
-        val baseDamage = max(10, actor.attack - target.defense)
-        val totalDamage = (baseDamage * qteMultiplier * elementFactor).toInt()
-
-        target.currentHp = max(0, target.currentHp - totalDamage)
-
-        val ratingText = when {
-            successRatio > 0.85f -> "ИДЕАЛЬНО QTE! ✨"
-            successRatio > 0.65f -> "ОТЛИЧНО! 👍"
-            else -> "Слабый Тайминг... 💤"
-        }
-
-        val comboCombo = if (actor.element == Element.ICE && totalDamage > 30) " [ЗАМОРОЗКА!]" else ""
-
-        val log = current.combatLog.toMutableList().apply {
-            add("⚔️ $ratingText ${actor.name} применяет Навык по ${target.name}.")
-            add("$totalDamage урона стихией ${actor.element.title}$comboCombo. (Элемент-Множитель: ${elementFactor}x)")
-            if (target.currentHp <= 0) {
-                add("💥 Порождение хаоса ${target.name} испарилось в эфир!")
-            }
-        }
-
-        _activeBattle.value = current.copy(
-            activeUnitUid = null,
-            qteState = CombatQteState(active = false),
-            combatLog = log
-        )
-
-        checkBattleFinishConditions()
-    }
-
-    fun feedSwipeResult(correct: Boolean) {
-        val current = _activeBattle.value ?: return
-        if (correct) {
-            _activeBattle.value = current.copy(
-                qteState = current.qteState.copy(multiplier = 0f, promptText = "УСПЕШНЫЙ БЛОК! 🛡️")
-            )
-            showToast("Кувырок Блокирован QTE!")
-        }
-    }
-
-    // Elemental damage scales
-    private fun calculateElementalAdvantage(a: Element, b: Element): Float {
-        if (a == Element.ICE && b == Element.MIST) return 1.5f
-        if (a == Element.BLAZE && b == Element.ICE) return 1.5f
-        if (a == Element.MIST && b == Element.BLAZE) return 1.5f
-        if (b == Element.AETHER) return 1.0f
-        return 1.0f
-    }
-
-    fun playerDefenseGuard() {
-        val current = _activeBattle.value ?: return
-        val activeUid = current.activeUnitUid ?: return
-        val actor = current.playerUnits.find { it.uid == activeUid } ?: return
-
-        val log = current.combatLog.toMutableList().apply {
-            add("🛡️ ${actor.name} вошёл в глухую оборону (+50% Защиты до начала следующего хода).")
-        }
-
-        _activeBattle.value = current.copy(
-            activeUnitUid = null,
-            combatLog = log
-        )
-        tickBattleTimer()
-    }
-
-    fun runFromBattle() {
-        showToast("Вы отступили обратно в безопасный сектор!")
-        _activeBattle.value = null
-        _currentTab.value = "MAP"
-    }
-
-    private fun checkBattleFinishConditions() {
-        val current = _activeBattle.value ?: return
-        val heroesLiving = current.playerUnits.filter { it.currentHp > 0 }
-        val enemiesLiving = current.enemyUnits.filter { it.currentHp > 0 }
-
-        if (enemiesLiving.isEmpty()) {
-            resolveBattleFinish(victory = true)
-        } else if (heroesLiving.isEmpty()) {
-            resolveBattleFinish(victory = false)
-        }
-    }
-
-    private fun resolveBattleFinish(victory: Boolean) {
-        val current = _activeBattle.value ?: return
-        viewModelScope.launch {
-            if (victory) {
-                // Award loot, shards, xp
-                val baseGold = Random.nextInt(120, 300)
-                val baseShards = Random.nextInt(5, 15)
-                val xpEarned = 40
-
-                val profile = repository.getProfileSync()
-                if (profile != null) {
-                    var isNewGearEarned = Random.nextFloat() > 0.4f // 60% gear drop
-                    var gearDrop: GearItem? = null
-
-                    if (isNewGearEarned) {
-                        val gearRarity = when (Random.nextInt(100)) {
-                            in 0..50 -> Rarity.COMMON
-                            in 51..85 -> Rarity.RARE
-                            in 86..96 -> Rarity.EPIC
-                            else -> Rarity.LEGENDARY
-                        }
-                        val gearType = GearSlot.entries.random()
-                        val gearLvl = profile.level
-                        gearDrop = GearItem(
-                            id = "gear_drop_${System.currentTimeMillis()}",
-                            name = "${gearRarity.title} ${gearType.title}",
-                            slot = gearType,
-                            rarity = gearRarity,
-                            levelReq = gearLvl,
-                            basePower = 10 + gearLvl * 6,
-                            affixes = generateAffixesForGear(gearRarity),
-                            equippedHeroId = null
-                        )
-                        repository.saveGearItem(gearDrop)
-                    }
-
-                    // Level up check
-                    var newXp = profile.xp + xpEarned
-                    var newLvl = profile.level
-                    val targetXp = profile.level * 100
-                    if (newXp >= targetXp) {
-                        newXp -= targetXp
-                        newLvl += 1
-                        showToast("🎉 ВЫ ПОВЫСИЛИ УРОВЕНЬ! Текущий уровень: $newLvl!")
-                    }
-
-                    val updatedProfile = profile.copy(
-                        level = newLvl,
-                        xp = newXp,
-                        gold = profile.gold + baseGold,
-                        abyssalShards = profile.abyssalShards + baseShards,
-                        dailyDungeonsCleared = profile.dailyDungeonsCleared + 1
-                    )
-                    repository.saveProfile(updatedProfile)
-
-                    // Add XP to player core heroes
-                    val allTeam = repository.getAllHeroesSync()
-                    for (hero in allTeam) {
-                        val upHero = hero.copy(xp = hero.xp + xpEarned)
-                        // Trigger level up on hero if needed
-                        var heroLvl = upHero.currentLevel
-                        var hXp = upHero.xp
-                        if (hXp >= heroLvl * 80) {
-                            hXp -= heroLvl * 80
-                            heroLvl += 1
-                        }
-                        repository.saveHero(upHero.copy(currentLevel = heroLvl, xp = hXp))
-                    }
-
-                    _activeBattle.value = current.copy(
-                        isFinished = true,
-                        isVictory = true,
-                        xpReward = xpEarned,
-                        goldReward = baseGold,
-                        shardReward = baseShards,
-                        gearReward = gearDrop,
-                        combatLog = current.combatLog.toMutableList().apply {
-                            add("🏆 ПОБЕДА! Врата Бездны запечатаны.")
-                            add("Награда: +$xpEarned XP, +$baseGold Золота, +$baseShards Осколков.")
-                            if (gearDrop != null) {
-                                add("🎁 Получен предмет: [${gearDrop.rarity.title}] ${gearDrop.name}")
-                            }
-                        }
-                    )
-                }
-            } else {
-                _activeBattle.value = current.copy(
-                    isFinished = true,
-                    isVictory = false,
-                    combatLog = current.combatLog.toMutableList().apply {
-                        add("💀 ПОРАЖЕНИЕ! Герои потеряли сознание и эвакуированы в Святилище.")
-                    }
-                )
-            }
-        }
-    }
-
-    fun claimBattleRewardsExit() {
-        _activeBattle.value = null
-        _currentTab.value = "MAP"
-    }
-
-    private fun generateAffixesForGear(rarity: Rarity): List<GearAffix> {
-        val list = mutableListOf<GearAffix>()
-        val statPools = listOf("Сила", "ОЗ", "Защита", "Скорость")
-        val affixCount = when (rarity) {
-            Rarity.COMMON -> 0
-            Rarity.UNCOMMON -> 1
-            Rarity.RARE -> 2
-            Rarity.EPIC -> 3
-            Rarity.LEGENDARY -> 4
-            Rarity.MYTHIC -> 5
-        }
-        for (i in 0 until affixCount) {
-            val stat = statPools.random()
-            val valRoll = when (stat) {
-                "ОЗ" -> Random.nextInt(20, 80)
-                "Сила" -> Random.nextInt(4, 15)
-                "Защита" -> Random.nextInt(3, 10)
-                else -> Random.nextInt(2, 6)
-            }
-            list.add(GearAffix(stat, valRoll))
-        }
-        return list
-    }
-
-
-    // --- BLACKSMITH & ASTRAL FORGE MECHANICS ---
-    fun dismantleItem(gear: GearItem) {
-        viewModelScope.launch {
-            val prof = repository.getProfileSync() ?: return@launch
-            val shardsEarned = when (gear.rarity) {
-                Rarity.COMMON -> 3
-                Rarity.UNCOMMON -> 5
-                Rarity.RARE -> 10
-                Rarity.EPIC -> 25
-                Rarity.LEGENDARY -> 60
-                Rarity.MYTHIC -> 150
-            }
-
-            repository.deleteGearItem(gear.id)
-            val updated = prof.copy(abyssalShards = prof.abyssalShards + shardsEarned)
-            repository.saveProfile(updated)
-
-            showToast("Разобрано: ${gear.name}. Получено $shardsEarned осколков!")
-        }
-    }
-
-    fun craftNewItem(slot: GearSlot) {
-        viewModelScope.launch {
-            val prof = repository.getProfileSync() ?: return@launch
-            val shardCost = 15
-            val goldCost = 150
-
-            if (prof.abyssalShards < shardCost || prof.gold < goldCost) {
-                showToast("Недостаточно ресурсов! Требуется: 15 Осколков и 150 Золота.")
-                return@launch
-            }
-
-            // RNG Rarity roll
-            val dice = Random.nextInt(100)
-            val craftedRarity = when {
-                dice > 92 -> Rarity.LEGENDARY
-                dice > 75 -> Rarity.EPIC
-                dice > 40 -> Rarity.RARE
-                else -> Rarity.COMMON
-            }
-
-            val newItem = GearItem(
-                id = "gear_crafted_${System.currentTimeMillis()}",
-                name = "🌌 Кованый ${slot.title}",
-                slot = slot,
-                rarity = craftedRarity,
-                levelReq = prof.level,
-                basePower = 12 + prof.level * 6,
-                affixes = generateAffixesForGear(craftedRarity)
-            )
-
-            repository.saveGearItem(newItem)
-
-            val updated = prof.copy(
-                abyssalShards = prof.abyssalShards - shardCost,
-                gold = prof.gold - goldCost
-            )
-            repository.saveProfile(updated)
-
-            showToast("Выковано: [${craftedRarity.title}] ${newItem.name}!")
-        }
-    }
-
-    fun reforgeEquipmentAffixes(gear: GearItem) {
-        viewModelScope.launch {
-            val prof = repository.getProfileSync() ?: return@launch
-            val cost = 5
-            if (prof.abyssalShards < cost) {
-                showToast("Для перековки требуется 5 Осколков Бездны!")
-                return@launch
-            }
-
-            val rerolled = gear.copy(
-                affixes = generateAffixesForGear(gear.rarity)
-            )
-            repository.saveGearItem(rerolled)
-
-            val updated = prof.copy(abyssalShards = prof.abyssalShards - cost)
-            repository.saveProfile(updated)
-
-            showToast("Аффиксы предмета перекованы в астральном огне!")
-        }
-    }
-
-    fun equipItemToHero(gear: GearItem, heroId: String?) {
-        viewModelScope.launch {
-            // Un-equip other gear in same slot on that hero
-            if (heroId != null) {
-                val currentEquipped = repository.getAllGearSync()
-                    .find { it.equippedHeroId == heroId && it.slot == gear.slot }
-                if (currentEquipped != null) {
-                    repository.saveGearItem(currentEquipped.copy(equippedHeroId = null))
-                }
-            }
-
-            val updated = gear.copy(equippedHeroId = heroId)
-            repository.saveGearItem(updated)
-            showToast(if (heroId == null) "Предмет снят" else "Предмет экипирован!")
-        }
-    }
-
-
-    // --- HERO ELEVATION & EXPEDIATIONS ---
+    fun playerTriggerSkillAttack() = combatViewModel.playerTriggerSkillAttack()
+    fun playerFinishQTEHit(successRatio: Float) = combatViewModel.playerFinishQTEHit(successRatio)
+    fun feedSwipeResult(correct: Boolean) = combatViewModel.feedSwipeResult(correct)
+    fun playerDefenseGuard() = combatViewModel.playerDefenseGuard()
+    fun runFromBattle() = combatViewModel.runFromBattle { selectTab("MAP") }
+    fun claimBattleRewardsExit() = combatViewModel.claimBattleRewardsExit { selectTab("MAP") }
+
+    // --- DELEGATED FORGE & INVENTORY METHODS ---
+    fun dismantleItem(gear: GearItem) = forgeViewModel.dismantleItem(gear)
+    fun craftNewItem(slot: GearSlot) = forgeViewModel.craftNewItem(slot)
+    fun reforgeEquipmentAffixes(gear: GearItem) = forgeViewModel.reforgeEquipmentAffixes(gear)
+    fun equipItemToHero(gear: GearItem, heroId: String?) = forgeViewModel.equipItemToHero(gear, heroId)
+
+    // --- HERO PROGRESSION ---
     fun levelUpHeroThroughShards(hero: AwakenedHero) {
         viewModelScope.launch {
             val prof = repository.getProfileSync() ?: return@launch
@@ -1062,7 +308,7 @@ class GameViewModel(
     fun ascendHeroStars(hero: AwakenedHero) {
         viewModelScope.launch {
             val prof = repository.getProfileSync() ?: return@launch
-            val costShards = 100 // Hard cap ascension requirement
+            val costShards = 100
             if (prof.abyssalShards < costShards) {
                 showToast("Для Возвышения Звёзд требуется 100 Осколков Силы!")
                 return@launch
@@ -1106,12 +352,11 @@ class GameViewModel(
         }
     }
 
-
     // --- PORTAL GACHA SUMMONS ---
     fun executeVoidPortalSummon() {
         viewModelScope.launch {
             val prof = repository.getProfileSync() ?: return@launch
-            val summonCost = 15 // Shards required
+            val summonCost = 15
             if (prof.abyssalShards < summonCost) {
                 showToast("Недостаточно осколков! Требуется 15 ед. для открытия Врат.")
                 return@launch
@@ -1147,8 +392,7 @@ class GameViewModel(
         }
     }
 
-
-    // --- SOCIAL INTEGRATIONS ---
+    // --- SOCIETAL COVENANTS ---
     fun donateToCovenantGuild(guild: GuildEntity) {
         viewModelScope.launch {
             val prof = repository.getProfileSync() ?: return@launch
@@ -1184,8 +428,7 @@ class GameViewModel(
         }
     }
 
-
-    // --- DATA BACKUP AND SERVER HYBRID EXPORT ---
+    // --- IMPORT / EXPORT BACKUP ---
     suspend fun exportBackupJson(): String {
         val rootObj = JSONObject()
         try {
@@ -1202,7 +445,6 @@ class GameViewModel(
             }
             rootObj.put("profile", profJson)
 
-            // Heroes List
             val heroesArr = JSONArray()
             val heroes = repository.getAllHeroesSync()
             for (h in heroes) {
@@ -1222,7 +464,6 @@ class GameViewModel(
             }
             rootObj.put("heroes", heroesArr)
 
-            // Gear Inventory
             val gearArr = JSONArray()
             val gear = repository.getAllGearSync()
             for (g in gear) {
@@ -1238,7 +479,6 @@ class GameViewModel(
                 gearArr.put(gJson)
             }
             rootObj.put("gear", gearArr)
-
             rootObj.put("exportTime", System.currentTimeMillis())
         } catch (e: Exception) {
             e.printStackTrace()
@@ -1267,7 +507,6 @@ class GameViewModel(
                 )
                 repository.saveProfile(updatedProf)
 
-                // Decode Heroes
                 val heroesArr = root.getJSONArray("heroes")
                 val importedHeroes = mutableListOf<AwakenedHero>()
                 for (i in 0 until heroesArr.length()) {
@@ -1289,7 +528,6 @@ class GameViewModel(
                 }
                 repository.saveHeroes(importedHeroes)
 
-                // Decode Gear info
                 val gearArr = root.getJSONArray("gear")
                 val importedGear = mutableListOf<GearItem>()
                 for (i in 0 until gearArr.length()) {
@@ -1309,7 +547,7 @@ class GameViewModel(
                 }
                 repository.saveGearItems(importedGear)
 
-                generateSurroundingPOIs(updatedProf.currentLatitude, updatedProf.currentLongitude)
+                mapViewModel.generateSurroundingPOIs(updatedProf.currentLatitude, updatedProf.currentLongitude)
                 showToast("Синхронизация успешно выполнена! Локальный сейв обновлен.")
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -1324,8 +562,8 @@ class GameViewModel(
 
     override fun onCleared() {
         super.onCleared()
-        fuzzerJob.cancel()
-        battleTickerJob.cancel()
-        removeLocationListener()
+        mapViewModel.clear()
+        combatViewModel.clear()
+        forgeViewModel.clear()
     }
 }

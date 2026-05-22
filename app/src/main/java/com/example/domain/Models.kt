@@ -130,15 +130,15 @@ data class BattleUnit(
     val id: String, // Hero or Mob id
     val name: String,
     val isHero: Boolean,
-    var currentHp: Int,
+    val currentHp: Int,
     val maxHp: Int,
     val attack: Int,
     val defense: Int,
     val speed: Int,
     val element: Element,
-    var currentActionPoints: Float = 0f,
-    var statusEffect: String? = null,
-    var statusDuration: Int = 0
+    val currentActionPoints: Float = 0f,
+    val statusEffect: String? = null,
+    val statusDuration: Int = 0
 ) : Serializable
 
 enum class QteType {

@@ -274,6 +274,7 @@ fun MapDashboardScreen(state: GameUiState.Loaded, viewModel: GameViewModel) {
     val context = LocalContext.current
     var zoomFactor by remember { mutableStateOf(1.2f) }
     var landmarksExpanded by remember { mutableStateOf(false) }
+    var mapStyle by remember { mutableStateOf("REAL") }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -292,7 +293,8 @@ fun MapDashboardScreen(state: GameUiState.Loaded, viewModel: GameViewModel) {
             playerLon = state.profile.currentLongitude,
             pois = state.pois,
             viewModel = viewModel,
-            zoomFactor = zoomFactor
+            zoomFactor = zoomFactor,
+            mapStyle = mapStyle
         )
 
         // FLOATING TOP BAR: CHRONICLES & ECOSYSTEM TELEMETRY
@@ -424,6 +426,53 @@ fun MapDashboardScreen(state: GameUiState.Loaded, viewModel: GameViewModel) {
                                     fontSize = 11.sp
                                 )
                             }
+                        }
+                    }
+                }
+
+                // THEMAP THEMATIC STYLES ROWSELECTOR (REAL, ABYSS, LIGHT STYLES)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val styles = listOf(
+                        Triple("REAL", "РЕАЛ (RPG)", Color(0xFFE5C158)),
+                        Triple("ABYSS", "БЕЗДНА", Color(0xFF9155FF)),
+                        Triple("LIGHT", "ГОЛОГРАММА", Color(0xFF2A92E0))
+                    )
+
+                    styles.forEach { (id, label, accentColor) ->
+                        val active = (mapStyle == id)
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (active) accentColor.copy(alpha = 0.18f) else Color(0x990D0E15))
+                                .border(
+                                    BorderStroke(
+                                        if (active) 1.5.dp else 1.dp,
+                                        if (active) accentColor else Color.White.copy(alpha = 0.15f)
+                                    ),
+                                    RoundedCornerShape(8.dp)
+                                )
+                                .clickable {
+                                    mapStyle = id
+                                    viewModel.showToast("Стиль изменен на: $label")
+                                }
+                                .padding(vertical = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = label,
+                                color = if (active) Color.White else Color.White.copy(alpha = 0.6f),
+                                fontSize = 9.sp,
+                                fontWeight = if (active) FontWeight.Black else FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace,
+                                letterSpacing = 0.5.sp
+                            )
                         }
                     }
                 }
@@ -854,7 +903,8 @@ fun Fantasy2DMapView(
     playerLon: Double,
     pois: List<PointOfInterest>,
     viewModel: GameViewModel,
-    zoomFactor: Float
+    zoomFactor: Float,
+    mapStyle: String = "REAL"
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "RadarPulse")
     
@@ -889,14 +939,19 @@ fun Fantasy2DMapView(
         label = "GuidanceFlow"
     )
 
-    val zoom = 16
+    val zoom = when {
+        zoomFactor < 0.8f -> 14
+        zoomFactor < 1.3f -> 15
+        zoomFactor < 1.7f -> 16
+        else -> 17
+    }
     val centerX = getTileX(playerLon, zoom)
     val centerY = getTileY(playerLat, zoom)
 
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF07080B))
+            .background(if (mapStyle == "LIGHT") Color(0xFFF0F1F4) else Color(0xFF07080B))
     ) {
         val density = LocalDensity.current
         val widthDp = maxWidth
@@ -915,7 +970,7 @@ fun Fantasy2DMapView(
         val currentX = centerX.toInt()
         val currentY = centerY.toInt()
 
-        // 1. RENDER BACKGROUND REAL MAP TILES FROM CARTODB DARK MATTER
+        // 1. RENDER BACKGROUND REAL MAP TILES FROM CARTODB
         Box(modifier = Modifier.fillMaxSize()) {
             for (tileX in (currentX - 2)..(currentX + 2)) {
                 for (tileY in (currentY - 2)..(currentY + 2)) {
@@ -926,9 +981,15 @@ fun Fantasy2DMapView(
                     val leftDp = with(density) { leftPx.toDp() }
                     val topDp = with(density) { topPx.toDp() }
 
+                    val tileUrl = when (mapStyle) {
+                        "ABYSS" -> "https://basemaps.cartocdn.com/rastertiles/dark_all/$zoom/$tileX/$tileY.png"
+                        "LIGHT" -> "https://basemaps.cartocdn.com/rastertiles/light_all/$zoom/$tileX/$tileY.png"
+                        else -> "https://basemaps.cartocdn.com/rastertiles/voyager_labels_under/$zoom/$tileX/$tileY.png"
+                    }
+
                     coil.compose.AsyncImage(
                         model = coil.request.ImageRequest.Builder(LocalContext.current)
-                            .data("https://basemaps.cartocdn.com/dark_all/16/$tileX/$tileY.png")
+                            .data(tileUrl)
                             .crossfade(true)
                             .build(),
                         contentDescription = "Map Tile",
@@ -942,8 +1003,13 @@ fun Fantasy2DMapView(
         }
 
         // Overlay a refined vignette gradient to bleed real cartography background with the abyssal interface
+        val overlayColors = when (mapStyle) {
+            "REAL" -> listOf(Color.Transparent, Color(0x30000000), Color(0x6007080B))
+            "LIGHT" -> listOf(Color.Transparent, Color(0x20FFFFFF), Color(0x40FFFFFF))
+            else -> listOf(Color.Transparent, Color(0x70000000), Color(0xDD07080B))
+        }
         val radialGlow = Brush.radialGradient(
-            colors = listOf(Color.Transparent, Color(0x70000000), Color(0xDD07080B)),
+            colors = overlayColors,
             center = Offset(centerW, centerH),
             radius = max(centerW, centerH) * 1.15f
         )
@@ -959,13 +1025,13 @@ fun Fantasy2DMapView(
         ) {
             // Compass Dial index ring
             drawCircle(
-                color = FantasyGold.copy(alpha = 0.15f),
+                color = if (mapStyle == "LIGHT") Color(0x33005599) else FantasyGold.copy(alpha = 0.15f),
                 radius = 150f,
                 center = Offset(centerW, centerH),
                 style = Stroke(width = 1f)
             )
             drawCircle(
-                color = FantasyGold.copy(alpha = 0.05f),
+                color = if (mapStyle == "LIGHT") Color(0x1A005599) else FantasyGold.copy(alpha = 0.05f),
                 radius = 280f,
                 center = Offset(centerW, centerH),
                 style = Stroke(width = 1f)
@@ -983,7 +1049,7 @@ fun Fantasy2DMapView(
                     centerH + sin(theta) * 150f
                 )
                 drawLine(
-                    color = FantasyGold.copy(alpha = 0.22f),
+                    color = if (mapStyle == "LIGHT") Color(0x33005599) else FantasyGold.copy(alpha = 0.22f),
                     start = edgeStart,
                     end = edgeEnd,
                     strokeWidth = 1.5f
@@ -992,7 +1058,7 @@ fun Fantasy2DMapView(
 
             // Radar Sweep sonar ring
             drawCircle(
-                color = IceBlue.copy(alpha = pulseAlpha),
+                color = if (mapStyle == "LIGHT") Color(0x802A92E0) else IceBlue.copy(alpha = pulseAlpha),
                 radius = pulseRadius,
                 center = Offset(centerW, centerH),
                 style = Stroke(width = 1.6f)
@@ -1000,8 +1066,8 @@ fun Fantasy2DMapView(
 
             // 3. DRAW LANDMARKS, PORTALS & ALIGNED PROJECTION VECTOR LINES
             for (poi in pois) {
-                val poiX_tile = getTileX(poi.longitude, 16)
-                val poiY_tile = getTileY(poi.latitude, 16)
+                val poiX_tile = getTileX(poi.longitude, zoom)
+                val poiY_tile = getTileY(poi.latitude, zoom)
                 
                 val dx = (poiX_tile - centerX).toFloat()
                 val dy = (poiY_tile - centerY).toFloat()
@@ -2218,12 +2284,12 @@ fun GameBottomNavigationBar(
         windowInsets = WindowInsets.navigationBars
     ) {
         val tabs = listOf(
-            Triple("MAP", "Радар Бездны", Icons.Default.Explore),
-            Triple("PARTY", "Отряд", Icons.Default.Group),
-            Triple("FORGE", "Кузня Душ", Icons.Default.Hardware),
-            Triple("SUMMON", "Альянс Стихий", Icons.Default.AutoAwesome),
-            Triple("GUILD", "Зал Славы", Icons.Default.EmojiEvents),
-            Triple("SETTINGS", "Хроники Сейвов", Icons.Default.Save)
+            Triple("MAP", "Радар", Icons.Default.Explore),
+            Triple("PARTY", "Хранители", Icons.Default.Shield),
+            Triple("FORGE", "Арсенал", Icons.Default.Build),
+            Triple("SUMMON", "Призыв", Icons.Default.AutoAwesome),
+            Triple("GUILD", "Ковенанты", Icons.Default.Flag),
+            Triple("SETTINGS", "Хроники", Icons.Default.Settings)
         )
 
         tabs.forEach { (tab, label, icon) ->
