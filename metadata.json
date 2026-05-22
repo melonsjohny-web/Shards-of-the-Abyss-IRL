@@ -1,0 +1,6 @@
+{
+  "name": "Shards of the Abyss",
+  "description": "A GPS-based 2D Fantasy RPG with tactical QTE combat, elemental domains, local crafting, and offline progression.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
