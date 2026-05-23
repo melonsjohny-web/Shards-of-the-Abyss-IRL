@@ -78,6 +78,25 @@ class GameTypeConverters {
         if (value.isEmpty()) return emptyList()
         return value.split(",")
     }
+
+    @TypeConverter
+    fun fromStringMap(value: Map<String, String>): String {
+        return JSONObject(value).toString()
+    }
+
+    @TypeConverter
+    fun toStringMap(value: String): Map<String, String> {
+        val map = mutableMapOf<String, String>()
+        try {
+            val obj = JSONObject(value)
+            obj.keys().forEach { key ->
+                map[key] = obj.getString(key)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return map
+    }
 }
 
 // --- ENTITIES ---
@@ -141,7 +160,10 @@ data class PoiEntity(
     val maxLevel: Int,
     val lastVisitedTimestamp: Long,
     val isCapturedByGuild: Boolean,
-    val capturedGuildName: String?
+    val capturedGuildName: String?,
+    val osmTags: Map<String, String>,
+    val realName: String?,
+    val cooldownUntil: Long
 )
 
 @Entity(tableName = "guild_info")

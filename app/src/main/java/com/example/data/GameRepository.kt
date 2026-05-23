@@ -150,7 +150,10 @@ class GameRepository(private val gameDao: GameDao) {
         maxLevel = maxLevel,
         lastVisitedTimestamp = lastVisitedTimestamp,
         isCapturedByGuild = isCapturedByGuild,
-        capturedGuildName = capturedGuildName
+        capturedGuildName = capturedGuildName,
+        osmTags = osmTags,
+        realName = realName,
+        cooldownUntil = cooldownUntil
     )
 
     private fun PointOfInterest.toEntity() = PoiEntity(
@@ -164,6 +167,9 @@ class GameRepository(private val gameDao: GameDao) {
         maxLevel = maxLevel,
         lastVisitedTimestamp = lastVisitedTimestamp,
         isCapturedByGuild = isCapturedByGuild,
-        capturedGuildName = capturedGuildName
+        capturedGuildName = capturedGuildName,
+        osmTags = osmTags,
+        realName = realName,
+        cooldownUntil = cooldownUntil
     )
 }

@@ -29,6 +29,15 @@ class CombatViewModel(
         battleTickerJob?.cancel()
         battleTickerJob = scope.launch(Dispatchers.Default) {
             while (true) {
+                val current = _activeBattle.value
+                if (current == null || current.isFinished) {
+                    delay(500) // Keep idle overhead close to zero
+                    continue
+                }
+                if (current.activeUnitUid != null || current.qteState.active) {
+                    delay(200) // Sleep during player actions or active QTE
+                    continue
+                }
                 delay(100)
                 tickBattleTimer(isWeatherBoostingElement)
             }
@@ -86,21 +95,25 @@ class CombatViewModel(
                 )
             }
 
-            // Procedural enemies
+            // Procedural enemies with soft player level scaling
             val elements = Element.entries
             val enemiesCount = if (poi.type == PoiType.ABYSSAL_GATE || poi.type == PoiType.NEXUS_POINT) 1 else Random.nextInt(2, 4)
+            val playerLevel = repository.getProfileSync()?.level ?: 1
+            val effectiveLevel = ((poi.minLevel + poi.maxLevel) / 2 + playerLevel) / 2
+            val isBoss = enemiesCount == 1
+
             val enemyUnits = (1..enemiesCount).map { i ->
                 val enemyElem = elements[(poi.element.ordinal + i) % elements.size]
-                val enemyLvl = Random.nextInt(poi.minLevel, poi.maxLevel + 1)
-                val health = 50 + enemyLvl * 15
-                val baseAtk = 8 + enemyLvl * 3
-                val baseDef = 4 + enemyLvl * 2
-                val velocity = 8 + enemyLvl
+                val level = (effectiveLevel + Random.nextInt(-2, 3)).coerceAtLeast(1)
+                val health = if (isBoss) 150 + level * 25 else 50 + level * 12
+                val baseAtk = if (isBoss) 15 + level * 4 else 8 + level * 2
+                val baseDef = if (isBoss) 10 + level * 3 else 4 + level * 2
+                val velocity = 8 + level + (if (isBoss) 5 else 0)
 
                 BattleUnit(
                     uid = "enemy_${poi.id}_$i",
-                    id = "monster_$i",
-                    name = if (enemiesCount == 1) "🔥 Вожак Бездны (${poi.element.title})" else "Приспешник Хаоса №$i",
+                    id = if (isBoss) "boss_${poi.type}" else "minion_$i",
+                    name = if (isBoss) generateBossName(poi) else generateMinionName(enemyElem, i),
                     isHero = false,
                     currentHp = health,
                     maxHp = health,
@@ -452,6 +465,15 @@ class CombatViewModel(
                     )
                     repository.saveProfile(updatedProfile)
 
+                    // Put completed POI on cooldown inside Room database
+                    val poisList = repository.getAllPOIsSync()
+                    val matchPoi = poisList.find { it.id == current.poiId }
+                    if (matchPoi != null) {
+                        val cooldownPeriodMs = matchPoi.type.cooldownMinutes * 60 * 1000L
+                        val cooledPoi = matchPoi.copy(cooldownUntil = System.currentTimeMillis() + cooldownPeriodMs)
+                        repository.savePOIs(listOf(cooledPoi))
+                    }
+
                     val allTeam = repository.getAllHeroesSync()
                     for (hero in allTeam) {
                         val upHero = hero.copy(xp = hero.xp + xpEarned)
@@ -495,6 +517,33 @@ class CombatViewModel(
     fun claimBattleRewardsExit(navigateBack: () -> Unit) {
         _activeBattle.value = null
         navigateBack()
+    }
+
+    private fun generateBossName(poi: PointOfInterest): String {
+        val prefix = when (poi.element) {
+            Element.ICE -> "Ледяной"
+            Element.BLOOM -> "Живой"
+            Element.BLAZE -> "Пылающий"
+            Element.MIST -> "Туманный"
+            Element.AETHER -> "Эфирный"
+        }
+        val suffix = when (poi.type) {
+            PoiType.ABYSSAL_GATE -> "Страж Врат"
+            PoiType.NEXUS_POINT -> "Хранитель Узла"
+            else -> "Вожак Бездны"
+        }
+        return "👹 $prefix $suffix"
+    }
+
+    private fun generateMinionName(element: Element, index: Int): String {
+        val kind = when (element) {
+            Element.ICE -> "Ледяной Осколок"
+            Element.BLOOM -> "Цветочный Терновник"
+            Element.BLAZE -> "Пылающий Огонёк"
+            Element.MIST -> "Призрачный Дух"
+            Element.AETHER -> "Кадет Пустоты"
+        }
+        return "👾 $kind №$index"
     }
 
     fun clear() {

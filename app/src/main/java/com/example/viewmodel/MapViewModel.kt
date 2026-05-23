@@ -6,6 +6,9 @@ import android.location.Location
 import android.os.Looper
 import android.util.Log
 import com.example.data.GameRepository
+import com.example.data.POICache
+import com.example.data.OverpassService
+import okhttp3.OkHttpClient
 import com.example.domain.*
 import com.google.android.gms.location.*
 import kotlinx.coroutines.CoroutineScope
@@ -38,6 +41,10 @@ class MapViewModel(
     private var locationCallback: LocationCallback? = null
     private var weatherRotatorJob: Job? = null
 
+    private val okHttpClient = OkHttpClient()
+    private val overpassService = OverpassService(okHttpClient)
+    private val poiCache = POICache()
+
     init {
         // Night mode automatic check
         val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
@@ -45,22 +52,11 @@ class MapViewModel(
 
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(context)
 
-        // Weather fuzzer
-        weatherRotatorJob = scope.launch {
-            while (true) {
-                delay(300000) // 5 minutes
-                cycleWeather()
-            }
-        }
-    }
-
-    private fun cycleWeather() {
-        val nextWeather = WeatherCondition.entries.random()
-        _currentWeather.value = nextWeather
+        // Load actual OSM POIs on startup
         scope.launch {
             val prof = repository.getProfileSync()
             if (prof != null) {
-                showToast("Погода за окном изменилась: ${nextWeather.title}!")
+                loadPOIsForPosition(prof.currentLatitude, prof.currentLongitude)
             }
         }
     }
@@ -155,16 +151,30 @@ class MapViewModel(
             val prof = repository.getProfileSync() ?: return@launch
             val updated = prof.copy(currentLatitude = lat, currentLongitude = lon)
             repository.saveProfile(updated)
+            loadPOIsForPosition(lat, lon)
+        }
+    }
 
-            val dist = calculateDistance(prof.currentLatitude, prof.currentLongitude, lat, lon)
-            if (dist > 1500f) {
-                generateSurroundingPOIs(lat, lon)
-                showToast("Вы обнаружили неизведанный сектор! Рождены новые разломы.")
+    suspend fun loadPOIsForPosition(lat: Double, lon: Double) {
+        val cached = poiCache.get(lat, lon)
+        if (cached != null) {
+            return
+        }
+        val osmPois = overpassService.fetchPOIsNear(lat, lon)
+        if (osmPois.isNotEmpty()) {
+            poiCache.put(lat, lon, osmPois)
+            repository.savePOIs(osmPois)
+        } else {
+            val dbPois = repository.getAllPOIsSync()
+            if (dbPois.isEmpty()) {
+                generateFallbackPOIs(lat, lon)
+            } else {
+                poiCache.put(lat, lon, dbPois)
             }
         }
     }
 
-    suspend fun generateSurroundingPOIs(lat: Double, lon: Double) {
+    private suspend fun generateFallbackPOIs(lat: Double, lon: Double) {
         val namesIce = listOf("Замёрзшая Расселина", "Алтарь Аурелии", "Холодные Врата Эфира")
         val namesBloom = listOf("Цветущая Роща Мизу", "Сады Спокойствия", "Оазис Пробужденных")
         val namesBlaze = listOf("Жертвенный Утес Герра", "Кузница Пепла", "Квартал Гнева Стихии")
@@ -174,53 +184,37 @@ class MapViewModel(
         val newPois = mutableListOf<PointOfInterest>()
         val types = PoiType.entries
 
-        // Seed RNG based on coordinate blocks to make it even more deterministic when spawning
-        val cellX = floor(lat * 100).toInt()
-        val cellY = floor(lon * 100).toInt()
-        val seed = (cellX * 31 + cellY).toLong()
-        val r = Random(seed)
-
-        for (i in 0 until 8) {
+        for (i in 0 until 6) {
             val type = types[i % types.size]
             val element = Element.entries[i % Element.entries.size]
-            
-            val latOffset = (r.nextDouble() - 0.5) * 0.007
-            val lonOffset = (r.nextDouble() - 0.5) * 0.011
 
-            val targetLat = lat + latOffset
-            val targetLon = lon + lonOffset
+            val targetLat = lat + (if (i % 2 == 0) 1 else -1) * (0.002 + i * 0.001)
+            val targetLon = lon + (if (i % 3 == 0) 1 else -1) * (0.002 + i * 0.001)
 
             val rName = when (element) {
-                Element.ICE -> namesIce[r.nextInt(namesIce.size)]
-                Element.BLOOM -> namesBloom[r.nextInt(namesBloom.size)]
-                Element.BLAZE -> namesBlaze[r.nextInt(namesBlaze.size)]
-                Element.MIST -> namesMist[r.nextInt(namesMist.size)]
-                Element.AETHER -> namesAether[r.nextInt(namesAether.size)]
-            } + " (Ур. ${(i * 3) + 2})"
-
-            // Deterministic subpixel-precision based POI ID format
-            val deterministicId = "poi_proc_${i}_" + 
-                    String.format("%.4f_%.4f", targetLat, targetLon)
-                        .replace(",", "_")
-                        .replace(".", "_")
-                        .replace("-", "m")
+                Element.ICE -> namesIce[i % namesIce.size]
+                Element.BLOOM -> namesBloom[i % namesBloom.size]
+                Element.BLAZE -> namesBlaze[i % namesBlaze.size]
+                Element.MIST -> namesMist[i % namesMist.size]
+                Element.AETHER -> namesAether[i % namesAether.size]
+            }
 
             newPois.add(
                 PointOfInterest(
-                    id = deterministicId,
+                    id = "proc_fall_$i",
                     name = rName,
                     type = type,
                     element = element,
                     latitude = targetLat,
                     longitude = targetLon,
-                    minLevel = (i * 3) + 1,
-                    maxLevel = (i * 3) + 5,
-                    isCapturedByGuild = (i % 3 == 0),
-                    capturedGuildName = if (i % 3 == 0) "Орден Творцов" else null
+                    minLevel = (i * 2) + 1,
+                    maxLevel = (i * 2) + 5,
+                    cooldownUntil = 0
                 )
             )
         }
         repository.savePOIs(newPois)
+        poiCache.put(lat, lon, newPois)
     }
 
     fun calculateDistance(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Float {

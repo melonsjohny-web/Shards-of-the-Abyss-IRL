@@ -234,7 +234,7 @@ class GameViewModel(
 
             repository.saveGearItems(listOf(weapon, armor, ring))
 
-            mapViewModel.generateSurroundingPOIs(initialProfile.currentLatitude, initialProfile.currentLongitude)
+            mapViewModel.loadPOIsForPosition(initialProfile.currentLatitude, initialProfile.currentLongitude)
 
             repository.saveGuild(GuildEntity("Вороны Смерти", 12, 18, 50000, 600, 3))
             repository.saveGuild(GuildEntity("Первые Пробуждённые", 8, 14, 25000, 250, 1))
@@ -547,7 +547,7 @@ class GameViewModel(
                 }
                 repository.saveGearItems(importedGear)
 
-                mapViewModel.generateSurroundingPOIs(updatedProf.currentLatitude, updatedProf.currentLongitude)
+                mapViewModel.loadPOIsForPosition(updatedProf.currentLatitude, updatedProf.currentLongitude)
                 showToast("Синхронизация успешно выполнена! Локальный сейв обновлен.")
             } catch (e: Exception) {
                 e.printStackTrace()

@@ -107,7 +107,10 @@ data class PointOfInterest(
     val maxLevel: Int,
     val lastVisitedTimestamp: Long = 0,
     val isCapturedByGuild: Boolean = false,
-    val capturedGuildName: String? = null
+    val capturedGuildName: String? = null,
+    val osmTags: Map<String, String> = emptyMap(),
+    val realName: String? = null,
+    val cooldownUntil: Long = 0
 ) : Serializable
 
 enum class WeatherCondition(val title: String, val associatedElement: Element) {
