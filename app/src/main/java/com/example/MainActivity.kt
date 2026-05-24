@@ -98,11 +98,37 @@ class MainActivity : ComponentActivity() {
                     } catch (e: Exception) {
                         android.util.Log.w("SHARDS_MIGRATION", "Table poi_cooldowns creation failed or already exists", e)
                     }
+                    try {
+                        db.execSQL("CREATE INDEX IF NOT EXISTS index_pois_cooldownUntil ON pois(cooldownUntil)")
+                    } catch (e: Exception) {
+                        android.util.Log.w("SHARDS_MIGRATION", "Index index_pois_cooldownUntil on pois failed", e)
+                    }
+                    try {
+                        db.execSQL("CREATE INDEX IF NOT EXISTS index_poi_cooldowns_cooldownUntil ON poi_cooldowns(cooldownUntil)")
+                    } catch (e: Exception) {
+                        android.util.Log.w("SHARDS_MIGRATION", "Index index_poi_cooldowns_cooldownUntil on poi_cooldowns failed", e)
+                    }
                 }
             }
 
             // Get/Initialize active static db and repo
-            val db = getDatabase(applicationContext, migration1To2)
+            var db: GameDatabase
+            try {
+                db = getDatabase(applicationContext, migration1To2)
+                db.openHelper.writableDatabase // trigger actual load/migration check
+            } catch (t: Throwable) {
+                android.util.Log.e("SHARDS_INIT", "Database migration/validation failed, performing destructive recovery", t)
+                try {
+                    applicationContext.deleteDatabase("shards_of_abyss_db")
+                } catch (de: Exception) {
+                    android.util.Log.e("SHARDS_INIT", "Failed to clear database files", de)
+                }
+                staticDatabase = null
+                staticRepository = null
+                db = getDatabase(applicationContext, migration1To2)
+                db.openHelper.writableDatabase
+            }
+
             database = db
             val repo = getRepository(db)
             repository = repo
