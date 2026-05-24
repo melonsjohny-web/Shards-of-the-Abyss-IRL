@@ -274,6 +274,35 @@ interface GameDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun saveGuild(guild: GuildEntity)
 
+    @Query("DELETE FROM heroes")
+    suspend fun clearHeroes()
+
+    @Query("DELETE FROM gear")
+    suspend fun clearGear()
+
+    @Query("DELETE FROM game_profile")
+    suspend fun clearProfile()
+
+    @Transaction
+    suspend fun importBackupTransaction(
+        profile: GameProfileEntity,
+        heroes: List<HeroEntity>,
+        gearItems: List<GearItemEntity>
+    ) {
+        clearProfile()
+        clearHeroes()
+        clearGear()
+        saveProfile(profile)
+        insertHeroes(heroes)
+        insertGearItems(gearItems)
+    }
+
+    @Transaction
+    suspend fun replacePOIsTransaction(pois: List<PoiEntity>) {
+        clearPOIs()
+        insertPOIs(pois)
+    }
+
     @Transaction
     suspend fun clearAllData() {
         clearPOIs()

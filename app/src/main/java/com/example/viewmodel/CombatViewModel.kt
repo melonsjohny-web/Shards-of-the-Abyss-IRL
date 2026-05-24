@@ -127,7 +127,7 @@ class CombatViewModel(
                 val health = if (isBoss) 150 + level * 25 else 50 + level * 12
                 val baseAtk = if (isBoss) 15 + level * 4 else 8 + level * 2
                 val baseDef = if (isBoss) 10 + level * 3 else 4 + level * 2
-                val velocity = 8 + level + (if (isBoss) 5 else 0)
+                val velocity = 6 + (level * 0.7f).toInt() + (if (isBoss) 3 else 0)
 
                 BattleUnit(
                     uid = "enemy_${poi.id}_$i",
@@ -303,6 +303,7 @@ class CombatViewModel(
                     add("👹 ${monster.name} готовит $attackName по воину ${target.name}...")
                 }
 
+                val nonce = "attack_nonce_${System.currentTimeMillis()}_${Random.nextInt(10000)}"
                 _activeBattle.value = current.copy(
                     combatLog = updateLog,
                     qteState = CombatQteState(
@@ -311,7 +312,8 @@ class CombatViewModel(
                         promptText = prompt,
                         targetDirection = randomDir,
                         timeLeftMs = durationMs,
-                        multiplier = 1.0f + roll * 0.5f
+                        multiplier = 1.0f + roll * 0.5f,
+                        attackNonce = nonce
                     )
                 )
 
@@ -320,19 +322,19 @@ class CombatViewModel(
                     delay(durationMs)
                     combatMutex.withLock {
                         val state = _activeBattle.value ?: return@withLock
-                        if (state.poiId != currentPoiId || state.isFinished || !state.qteState.active) return@withLock
+                        if (state.poiId != currentPoiId || state.isFinished || !state.qteState.active || state.qteState.attackNonce != nonce) return@withLock
                         
                         val blockSuccessful = state.qteState.multiplier == 0f
-                        executeMonsterAttackBlow(monster, target, blockSuccessful, attackType = roll)
+                        executeMonsterAttackBlow(monster, target, blockSuccessful, attackType = roll, nonce = nonce)
                     }
                 }
             }
         }
     }
 
-    private fun executeMonsterAttackBlow(monster: BattleUnit, target: BattleUnit, blockSuccessful: Boolean, attackType: Int) {
+    private fun executeMonsterAttackBlow(monster: BattleUnit, target: BattleUnit, blockSuccessful: Boolean, attackType: Int, nonce: String) {
         val current = _activeBattle.value ?: return
-        if (current.isFinished || current.playerUnits.none { it.uid == target.uid } || !current.qteState.active) return
+        if (current.isFinished || current.playerUnits.none { it.uid == target.uid } || !current.qteState.active || current.qteState.attackNonce != nonce) return
 
         // Fetch target again to ensure up-to-date HP and Guard values
         val actualTarget = current.playerUnits.find { it.uid == target.uid } ?: return
@@ -434,10 +436,10 @@ class CombatViewModel(
                 _activeBattle.value = current.copy(
                     qteState = CombatQteState(
                         active = true,
-                        type = QteType.ATTACK_RING,
-                        promptText = "🌟 СУПЕРПРИЕМ СТИХИЙ! ТАП в идеальной границе сужения!",
-                        timeLeftMs = 1100,
-                        multiplier = 1.8f
+                        type = QteType.RHYTHM_ULTIMATE,
+                        promptText = "🌟 СУПЕРУДАР: РИТМ-СЛИЯНИЕ СТИХИЙ!",
+                        timeLeftMs = 1800,
+                        multiplier = 2.5f
                     )
                 )
             }
@@ -451,7 +453,7 @@ class CombatViewModel(
                 val activeUid = current.activeUnitUid ?: return@withLock
                 val actor = current.playerUnits.find { it.uid == activeUid } ?: return@withLock
 
-                val healAmount = (actor.maxHp * 0.35f).toInt()
+                val healAmount = (actor.maxHp * 0.20f).toInt()
                 val updatedPUnits = current.playerUnits.map { unit ->
                     if (unit.uid == actor.uid) {
                         unit.copy(currentHp = (unit.currentHp + healAmount).coerceAtMost(unit.maxHp))
@@ -619,8 +621,8 @@ class CombatViewModel(
                 if (doubleCheck.isFinished) return@withLock
 
                 if (victory) {
-                    val baseGold = Random.nextInt(120, 300)
-                    val baseShards = Random.nextInt(5, 15)
+                    val baseGold = Random.nextInt(40, 90)
+                    val baseShards = Random.nextInt(2, 6)
                     val xpEarned = 40
 
                     val profile = repository.getProfileSync()

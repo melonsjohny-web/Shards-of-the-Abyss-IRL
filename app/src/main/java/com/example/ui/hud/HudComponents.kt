@@ -880,7 +880,7 @@ fun MapDashboardScreen(state: GameUiState.Loaded, viewModel: GameViewModel) {
                         }.sortedBy { it.second }
 
                         items(listSorted) { (poi, distance) ->
-                            val canEnter = distance <= 50f
+                            val canEnter = distance <= 120f
                             val rowColor = if (isNight) Color(0xFF1A1F2C) else Color(0xFFF7F2EB)
                             val rowText = if (isNight) Color.White else Color(0xFF2C1E14)
 
@@ -1115,9 +1115,38 @@ fun Fantasy2DMapView(
                     x = poiX,
                     y = poiY,
                     distance = distance,
-                    canEnter = distance <= 50f,
+                    canEnter = distance <= 120f,
                     isNearby = distance <= 500f
                 )
+            }
+        }
+
+        // 0. OFFLINE RADAR BACKUP COORDINATES GRID (rendered behind tile images)
+        androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize().background(if (isNight) Color(0xFF0F111A) else Color(0xFFFBF8F3))) {
+            val gridSpacing = 40.dp.toPx()
+            val lineColor = if (isNight) Color(0x1564B5F6) else Color(0x30D7CCC8)
+            val subLineColor = if (isNight) Color(0x0A00E5FF) else Color(0x158D6E63)
+            
+            // Draw coordinate grid lines
+            var x = panX % gridSpacing
+            while (x < size.width) {
+                drawLine(
+                    color = if ((x - panX) % (gridSpacing * 4) == 0f) lineColor else subLineColor,
+                    start = androidx.compose.ui.geometry.Offset(x, 0f),
+                    end = androidx.compose.ui.geometry.Offset(x, size.height),
+                    strokeWidth = if ((x - panX) % (gridSpacing * 4) == 0f) 1.5f else 1f
+                )
+                x += gridSpacing
+            }
+            var y = panY % gridSpacing
+            while (y < size.height) {
+                drawLine(
+                    color = if ((y - panY) % (gridSpacing * 4) == 0f) lineColor else subLineColor,
+                    start = androidx.compose.ui.geometry.Offset(0f, y),
+                    end = androidx.compose.ui.geometry.Offset(size.width, y),
+                    strokeWidth = if ((y - panY) % (gridSpacing * 4) == 0f) 1.5f else 1f
+                )
+                y += gridSpacing
             }
         }
 
@@ -1515,7 +1544,7 @@ fun PoiDetailBottomSheet(
 ) {
     val sheetState = rememberModalBottomSheetState()
     val elementColor = Color(poi.element.colorHex)
-    val canEnter = distance <= 50f
+    val canEnter = distance <= 120f
     val isOnCooldown = poi.cooldownUntil > System.currentTimeMillis()
 
     ModalBottomSheet(
@@ -3020,6 +3049,12 @@ fun CombatArenaLayout(battle: ActiveBattleState, viewModel: GameViewModel) {
                             onSwipeResult = { success -> viewModel.feedSwipeResult(success) }
                         )
                     }
+                    QteType.RHYTHM_ULTIMATE -> {
+                        RhythmUltimateQteWidget(
+                            prompt = qteState.promptText,
+                            onQteFinish = { score -> viewModel.playerFinishQTEHit(score) }
+                        )
+                    }
                     else -> {}
                 }
             } else {
@@ -3441,5 +3476,149 @@ fun BlockSwipeQteWidget(
             fontSize = 11.sp,
             textAlign = TextAlign.Center
         )
+    }
+}
+
+// QTE WIDGET 3: RHYTHM ULTIMATE INTERACTIVE COMBO TAP
+@Composable
+fun RhythmUltimateQteWidget(
+    prompt: String,
+    onQteFinish: (Float) -> Unit
+) {
+    val possibleElements = remember { listOf(Element.BLAZE, Element.ICE, Element.BLOOM) }
+    val comboSequence = remember { List(3) { possibleElements.random() } }
+    
+    var currentStep by remember { mutableStateOf(0) }
+    var hasFinished by remember { mutableStateOf(false) }
+    
+    val totalTime = 1800L
+    var timeLeft by remember { mutableStateOf(totalTime) }
+    
+    LaunchedEffect(prompt) {
+        timeLeft = totalTime
+        while (timeLeft > 0 && !hasFinished) {
+            delay(100L)
+            timeLeft -= 100L
+        }
+        if (!hasFinished) {
+            hasFinished = true
+            val score = when (currentStep) {
+                0 -> 0.2f
+                1 -> 0.5f
+                2 -> 0.7f
+                else -> 1.0f
+            }
+            onQteFinish(score)
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.SpaceBetween,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = "🌌 РИТМ-СЛИЯНИЕ БЕЗДНЫ 🌌",
+                color = FantasyGold,
+                fontWeight = FontWeight.Bold,
+                fontSize = 15.sp,
+                textAlign = TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Для суперудара нажмите сферы combo в верном порядке!",
+                color = Color.White.copy(alpha = 0.8f),
+                fontSize = 11.sp,
+                textAlign = TextAlign.Center
+            )
+        }
+
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            comboSequence.forEachIndexed { index, elem ->
+                val isMatched = index < currentStep
+                val isCurrent = index == currentStep
+                
+                Box(
+                    modifier = Modifier
+                        .size(54.dp)
+                        .background(
+                            color = if (isMatched) Color(elem.colorHex).copy(alpha = 0.4f) else Color.DarkGray.copy(alpha = 0.2f),
+                            shape = CircleShape
+                        )
+                        .border(
+                            width = if (isCurrent) 3.dp else 1.dp,
+                            color = if (isCurrent) Color(elem.colorHex) else if (isMatched) Color(elem.colorHex) else Color.White.copy(alpha = 0.4f),
+                            shape = CircleShape
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = when (elem) {
+                            Element.BLAZE -> "🔥"
+                            Element.ICE -> "❄️"
+                            Element.BLOOM -> "🌱"
+                            else -> "✨"
+                        },
+                        fontSize = 22.sp
+                    )
+                }
+            }
+        }
+
+        LinearProgressIndicator(
+            progress = { timeLeft.toFloat() / totalTime },
+            modifier = Modifier
+                .fillMaxWidth(0.85f)
+                .height(6.dp)
+                .clip(RoundedCornerShape(3.dp)),
+            color = if (timeLeft < 500) Color.Red else Color(0xFF00E5FF),
+            trackColor = Color.White.copy(alpha = 0.1f)
+        )
+
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(20.dp),
+            modifier = Modifier.padding(bottom = 12.dp)
+        ) {
+            possibleElements.forEach { elem ->
+                Box(
+                    modifier = Modifier
+                        .size(68.dp)
+                        .clip(CircleShape)
+                        .background(Color(elem.colorHex).copy(alpha = 0.15f))
+                        .border(1.5.dp, Color(elem.colorHex), CircleShape)
+                        .clickable {
+                            if (!hasFinished) {
+                                if (comboSequence[currentStep] == elem) {
+                                    if (currentStep < 2) {
+                                        currentStep++
+                                    } else {
+                                        hasFinished = true
+                                        onQteFinish(1.0f)
+                                    }
+                                } else {
+                                    timeLeft = (timeLeft - 300).coerceAtLeast(0)
+                                }
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = when (elem) {
+                            Element.BLAZE -> "🔥"
+                            Element.ICE -> "❄️"
+                            Element.BLOOM -> "🌱"
+                            else -> "✨"
+                        },
+                        fontSize = 28.sp
+                    )
+                }
+            }
+        }
     }
 }

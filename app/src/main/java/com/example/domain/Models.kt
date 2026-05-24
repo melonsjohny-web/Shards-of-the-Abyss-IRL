@@ -163,5 +163,6 @@ data class CombatQteState(
     val timeLeftMs: Long = 1000,
     val targetDirection: String = "UP", // UP, DOWN, LEFT, RIGHT for Swipe QTE
     val rhythmBeatsCount: Int = 0,
-    val rhythmBeatsSuccessful: Int = 0
+    val rhythmBeatsSuccessful: Int = 0,
+    val attackNonce: String = ""
 ) : Serializable

@@ -111,8 +111,15 @@ class GameViewModel(
     private val _feedbackMessage = MutableStateFlow<String?>(null)
 
     // Standard hourly etheric count for offline dungeons
-    private val _remainingEtherDungeons = MutableStateFlow(10)
-    val remainingEtherDungeons: StateFlow<Int> = _remainingEtherDungeons.asStateFlow()
+    val remainingEtherDungeons: StateFlow<Int> = repository.profileFlow
+        .map { profile ->
+            if (profile != null) {
+                (3 - profile.dailyDungeonsCleared).coerceAtLeast(0)
+            } else {
+                3
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 3)
 
     // Combined overall state
     private val orderStateFlow = combine(
@@ -203,8 +210,8 @@ class GameViewModel(
                 selectedElement = element,
                 level = 1,
                 xp = 0,
-                gold = 1000,
-                abyssalShards = 50,
+                gold = 250,
+                abyssalShards = 15,
                 currentLatitude = 55.7558,
                 currentLongitude = 37.6173,
                 activeGuildName = "Первые Пробуждённые",
@@ -396,9 +403,10 @@ class GameViewModel(
 
     fun triggerOfflineEtherDungeon() {
         viewModelScope.launch {
-            val limit = _remainingEtherDungeons.value
+            val prof = repository.getProfileSync() ?: return@launch
+            val limit = (3 - prof.dailyDungeonsCleared).coerceAtLeast(0)
             if (limit <= 0) {
-                showToast("Вы исчерпали лимит Эфирных данжей сегодня (макс 10/день)!")
+                showToast("Вы исчерпали лимит Эфирных данжей сегодня (макс 3/день)!")
                 return@launch
             }
 
@@ -413,7 +421,10 @@ class GameViewModel(
                 maxLevel = 15
             )
 
-            _remainingEtherDungeons.value = limit - 1
+            val updatedProf = prof.copy(
+                dailyDungeonsCleared = prof.dailyDungeonsCleared + 1
+            )
+            repository.saveProfile(updatedProf)
             initiatePOICombat(dummyPoi)
         }
     }
@@ -508,6 +519,8 @@ class GameViewModel(
                 put("lat", prof.currentLatitude)
                 put("lon", prof.currentLongitude)
                 put("guild", prof.activeGuildName)
+                put("dailyDungeons", prof.dailyDungeonsCleared)
+                put("quests", prof.completedQuestsCount)
             }
             rootObj.put("profile", profJson)
 
@@ -559,60 +572,58 @@ class GameViewModel(
                 val prof = root.getJSONObject("profile")
 
                 val updatedProf = GameProfileEntity(
-                    selectedElement = Element.fromString(prof.getString("element")),
-                    level = prof.getInt("level"),
-                    xp = prof.getOptInt("xp", 0),
-                    gold = prof.getInt("gold"),
-                    abyssalShards = prof.getInt("shards"),
-                    currentLatitude = prof.getDouble("lat"),
-                    currentLongitude = prof.getDouble("lon"),
-                    activeGuildName = if (prof.isNull("guild")) null else prof.optString("guild"),
-                    dailyDungeonsCleared = 2,
-                    lastClearedDate = System.currentTimeMillis(),
-                    completedQuestsCount = 1
+                     selectedElement = Element.fromString(prof.getString("element")),
+                     level = prof.getInt("level"),
+                     xp = prof.getOptInt("xp", 0),
+                     gold = prof.getInt("gold"),
+                     abyssalShards = prof.getInt("shards"),
+                     currentLatitude = prof.getDouble("lat"),
+                     currentLongitude = prof.getDouble("lon"),
+                     activeGuildName = if (prof.isNull("guild")) null else prof.optString("guild"),
+                     dailyDungeonsCleared = prof.getOptInt("dailyDungeons", 0),
+                     lastClearedDate = System.currentTimeMillis(),
+                     completedQuestsCount = prof.getOptInt("quests", 0)
                 )
-                repository.saveProfile(updatedProf)
 
                 val heroesArr = root.getJSONArray("heroes")
                 val importedHeroes = mutableListOf<AwakenedHero>()
                 for (i in 0 until heroesArr.length()) {
-                    val h = heroesArr.getJSONObject(i)
-                    importedHeroes.add(
-                        AwakenedHero(
-                            id = h.getString("id"),
-                            name = h.getString("name"),
-                            element = Element.fromString(h.getString("element")),
-                            currentLevel = h.getInt("level"),
-                            starRating = h.getInt("star"),
-                            xp = h.getOptInt("xp", 0),
-                            maxHp = h.getInt("maxHp"),
-                            attack = h.getInt("attack"),
-                            defense = h.getInt("defense"),
-                            speed = h.getInt("speed")
-                        )
-                    )
+                     val h = heroesArr.getJSONObject(i)
+                     importedHeroes.add(
+                         AwakenedHero(
+                             id = h.getString("id"),
+                             name = h.getString("name"),
+                             element = Element.fromString(h.getString("element")),
+                             currentLevel = h.getInt("level"),
+                             starRating = h.getInt("star"),
+                             xp = h.getOptInt("xp", 0),
+                             maxHp = h.getInt("maxHp"),
+                             attack = h.getInt("attack"),
+                             defense = h.getInt("defense"),
+                             speed = h.getInt("speed")
+                         )
+                     )
                 }
-                repository.saveHeroes(importedHeroes)
 
                 val gearArr = root.getJSONArray("gear")
                 val importedGear = mutableListOf<GearItem>()
                 for (i in 0 until gearArr.length()) {
-                    val g = gearArr.getJSONObject(i)
-                    importedGear.add(
-                        GearItem(
-                            id = g.getString("id"),
-                            name = g.getString("name"),
-                            slot = GearSlot.valueOf(g.getString("slot")),
-                            rarity = Rarity.fromString(g.getString("rarity")),
-                            levelReq = g.getInt("lvlReq"),
-                            basePower = g.getInt("power"),
-                            affixes = emptyList(),
-                            equippedHeroId = if (g.isNull("equipped")) null else g.getString("equipped")
-                        )
-                    )
+                     val g = gearArr.getJSONObject(i)
+                     importedGear.add(
+                         GearItem(
+                             id = g.getString("id"),
+                             name = g.getString("name"),
+                             slot = GearSlot.valueOf(g.getString("slot")),
+                             rarity = Rarity.fromString(g.getString("rarity")),
+                             levelReq = g.getInt("lvlReq"),
+                             basePower = g.getInt("power"),
+                             affixes = emptyList(),
+                             equippedHeroId = if (g.isNull("equipped") || g.getString("equipped").isEmpty()) null else g.getString("equipped")
+                         )
+                     )
                 }
-                repository.saveGearItems(importedGear)
 
+                repository.importBackupData(updatedProf, importedHeroes, importedGear)
                 mapViewModel.loadPOIsForPosition(updatedProf.currentLatitude, updatedProf.currentLongitude)
                 showToast("Синхронизация успешно выполнена! Локальный сейв обновлен.")
             } catch (e: Exception) {

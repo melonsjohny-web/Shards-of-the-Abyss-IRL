@@ -101,8 +101,48 @@ class GameRepository(private val gameDao: GameDao) {
         gameDao.insertPOIs(mergedPois.map { it.toEntity() })
     }
 
+    suspend fun replaceAndSavePOIs(pois: List<PointOfInterest>) {
+        val now = System.currentTimeMillis()
+        gameDao.pruneExpiredCooldowns(now)
+
+        val activeCooldowns = pois.filter { it.cooldownUntil > now }
+        if (activeCooldowns.isNotEmpty()) {
+            gameDao.savePoiCooldowns(activeCooldowns.map { PoiCooldownEntity(it.id, it.cooldownUntil) })
+        }
+
+        val savedCooldowns = gameDao.getAllPoiCooldownsSync().associateBy { it.poiId }
+        val mergedPois = pois.map { poi ->
+            val persists = savedCooldowns[poi.id]
+            if (persists != null && persists.cooldownUntil > now) {
+                poi.copy(cooldownUntil = persists.cooldownUntil)
+            } else {
+                poi
+            }
+        }
+
+        gameDao.replacePOIsTransaction(mergedPois.map { it.toEntity() })
+    }
+
     suspend fun clearPOIs() {
         gameDao.clearPOIs()
+    }
+
+    suspend fun importBackup(
+        profile: GameProfileEntity,
+        heroes: List<HeroEntity>,
+        gearItems: List<GearItemEntity>
+    ) {
+        gameDao.importBackupTransaction(profile, heroes, gearItems)
+    }
+
+    suspend fun importBackupData(
+        profile: GameProfileEntity,
+        heroes: List<AwakenedHero>,
+        gearItems: List<GearItem>
+    ) {
+        val heroEntities = heroes.map { it.toEntity() }
+        val gearEntities = gearItems.map { it.toEntity() }
+        gameDao.importBackupTransaction(profile, heroEntities, gearEntities)
     }
 
     // --- GUILDS ---

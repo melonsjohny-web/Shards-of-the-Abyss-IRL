@@ -21,6 +21,8 @@ import androidx.compose.ui.unit.dp
 import androidx.room.Room
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import com.example.data.GameDatabase
 import com.example.data.GameRepository
 import com.example.ui.hud.MainGameScreen
@@ -33,6 +35,30 @@ class MainActivity : ComponentActivity() {
     private var database: GameDatabase? = null
     private var repository: GameRepository? = null
     private var viewModel: GameViewModel? = null
+
+    companion object {
+        @Volatile
+        private var staticDatabase: GameDatabase? = null
+        @Volatile
+        private var staticRepository: GameRepository? = null
+
+        @Synchronized
+        fun getDatabase(context: android.content.Context, migration: Migration): GameDatabase {
+            return staticDatabase ?: Room.databaseBuilder(
+                context.applicationContext,
+                GameDatabase::class.java,
+                "shards_of_abyss_db"
+            )
+            .addMigrations(migration)
+            .fallbackToDestructiveMigration()
+            .build().also { staticDatabase = it }
+        }
+
+        @Synchronized
+        fun getRepository(db: GameDatabase): GameRepository {
+            return staticRepository ?: GameRepository(db.gameDao).also { staticRepository = it }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -67,23 +93,28 @@ class MainActivity : ComponentActivity() {
                     } catch (e: Exception) {
                         android.util.Log.w("SHARDS_MIGRATION", "Column cooldownUntil might already exist", e)
                     }
+                    try {
+                        db.execSQL("CREATE TABLE IF NOT EXISTS poi_cooldowns (poiId TEXT NOT NULL PRIMARY KEY, cooldownUntil INTEGER NOT NULL)")
+                    } catch (e: Exception) {
+                        android.util.Log.w("SHARDS_MIGRATION", "Table poi_cooldowns creation failed or already exists", e)
+                    }
                 }
             }
 
-            // Initialize SQLite Room DB
-            database = Room.databaseBuilder(
-                applicationContext,
-                GameDatabase::class.java,
-                "shards_of_abyss_db"
-            )
-            .addMigrations(migration1To2)
-            .fallbackToDestructiveMigration()
-            .build()
+            // Get/Initialize active static db and repo
+            val db = getDatabase(applicationContext, migration1To2)
+            database = db
+            val repo = getRepository(db)
+            repository = repo
 
-            val db = database ?: throw IllegalStateException("Database is null")
-            repository = GameRepository(db.gameDao)
-            val repo = repository ?: throw IllegalStateException("Repository is null")
-            viewModel = GameViewModel(applicationContext, repo)
+            // Instantiate retained ViewModel safely through ViewModelProvider
+            val vmFactory = object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                    return GameViewModel(applicationContext, repo) as T
+                }
+            }
+            viewModel = ViewModelProvider(this, vmFactory)[GameViewModel::class.java]
         } catch (t: Throwable) {
             android.util.Log.e("SHARDS_INIT", "Database/ViewModel initialization failure", t)
             initError = t
@@ -145,5 +176,15 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        viewModel?.mapViewModel?.onResume()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        viewModel?.mapViewModel?.onPause()
     }
 }

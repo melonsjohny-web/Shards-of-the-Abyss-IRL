@@ -41,13 +41,19 @@ class MapViewModel(
     private var locationCallback: LocationCallback? = null
     private var weatherRotatorJob: Job? = null
 
-    private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
-        .writeTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
-        .build()
+    companion object {
+        private val okHttpClient: OkHttpClient by lazy {
+            OkHttpClient.Builder()
+                .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+                .writeTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+                .build()
+        }
+    }
+
     private val overpassService = OverpassService(okHttpClient)
     private val poiCache = POICache()
+    private var lastOverpassRequestTime = 0L
 
     private var lastPoiRefreshLat = 0.0
     private var lastPoiRefreshLon = 0.0
@@ -155,6 +161,16 @@ class MapViewModel(
         locationCallback = null
     }
 
+    fun onResume() {
+        if (_isRealGpsEnabled.value) {
+            setupLocationListener()
+        }
+    }
+
+    fun onPause() {
+        removeLocationListener()
+    }
+
     fun triggerVirtualMove(dir: String) {
         scope.launch {
             val prof = repository.getProfileSync() ?: return@launch
@@ -202,11 +218,17 @@ class MapViewModel(
         }
         _isLoadingPOIs.value = true
         try {
-            val osmPois = overpassService.fetchPOIsNear(lat, lon)
+            val nowTime = System.currentTimeMillis()
+            val osmPois = if (nowTime - lastOverpassRequestTime >= 4000L) {
+                lastOverpassRequestTime = nowTime
+                overpassService.fetchPOIsNear(lat, lon)
+            } else {
+                emptyList()
+            }
+
             if (osmPois.isNotEmpty()) {
                 poiCache.put(lat, lon, osmPois)
-                repository.clearPOIs()
-                repository.savePOIs(osmPois)
+                repository.replaceAndSavePOIs(osmPois)
             } else {
                 val dbPois = repository.getAllPOIsSync()
                 if (dbPois.isEmpty()) {
@@ -217,6 +239,12 @@ class MapViewModel(
             }
         } catch (e: Exception) {
             e.printStackTrace()
+            val dbPois = repository.getAllPOIsSync()
+            if (dbPois.isEmpty()) {
+                generateFallbackPOIs(lat, lon)
+            } else {
+                poiCache.put(lat, lon, dbPois)
+            }
         } finally {
             _isLoadingPOIs.value = false
         }
@@ -261,8 +289,7 @@ class MapViewModel(
                 )
             )
         }
-        repository.clearPOIs()
-        repository.savePOIs(newPois)
+        repository.replaceAndSavePOIs(newPois)
         poiCache.put(lat, lon, newPois)
     }
 
