@@ -161,7 +161,7 @@ class MapViewModel(
             var newLat = prof.currentLatitude
             var newLon = prof.currentLongitude
 
-            val step = 0.0009
+            val step = 0.0004
             when (dir) {
                 "NORTH" -> newLat += step
                 "SOUTH" -> newLat -= step
@@ -205,6 +205,7 @@ class MapViewModel(
             val osmPois = overpassService.fetchPOIsNear(lat, lon)
             if (osmPois.isNotEmpty()) {
                 poiCache.put(lat, lon, osmPois)
+                repository.clearPOIs()
                 repository.savePOIs(osmPois)
             } else {
                 val dbPois = repository.getAllPOIsSync()
@@ -248,7 +249,7 @@ class MapViewModel(
 
             newPois.add(
                 PointOfInterest(
-                    id = "proc_fall_$i",
+                    id = "proc_fall_${(lat*1000).toInt()}_${(lon*1000).toInt()}_$i",
                     name = rName,
                     type = type,
                     element = element,
@@ -260,6 +261,7 @@ class MapViewModel(
                 )
             )
         }
+        repository.clearPOIs()
         repository.savePOIs(newPois)
         poiCache.put(lat, lon, newPois)
     }

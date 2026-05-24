@@ -9,7 +9,19 @@ class GameRepository(private val gameDao: GameDao) {
     // --- PROFILE ---
     val profileFlow: Flow<GameProfileEntity?> = gameDao.getProfile()
 
-    suspend fun getProfileSync(): GameProfileEntity? = gameDao.getProfileSync()
+    suspend fun getProfileSync(): GameProfileEntity? {
+        val profile = gameDao.getProfileSync() ?: return null
+        val now = System.currentTimeMillis()
+        if (profile.lastClearedDate / 86400000L != now / 86400000L) {
+            val resetProfile = profile.copy(
+                dailyDungeonsCleared = 0,
+                lastClearedDate = now
+            )
+            gameDao.saveProfile(resetProfile)
+            return resetProfile
+        }
+        return profile
+    }
 
     suspend fun saveProfile(profile: GameProfileEntity) {
         gameDao.saveProfile(profile)
@@ -32,6 +44,7 @@ class GameRepository(private val gameDao: GameDao) {
     }
 
     suspend fun deleteHero(id: String) {
+        gameDao.unequipGearForHero(id)
         gameDao.deleteHero(id)
     }
 

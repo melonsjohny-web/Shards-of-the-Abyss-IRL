@@ -187,7 +187,10 @@ class CombatViewModel(
             .maxByOrNull { it.currentActionPoints }
 
         if (nextAct != null) {
-            val clearedNextAct = nextAct.copy(currentActionPoints = 0f)
+            val clearedNextAct = nextAct.copy(
+                currentActionPoints = 0f,
+                statusEffect = if (nextAct.statusEffect == "GUARD") null else nextAct.statusEffect
+            )
             val finalPUnits = updatedPUnits.map { if (it.uid == nextAct.uid) clearedNextAct else it }
             val finalEUnits = updatedEUnits.map { if (it.uid == nextAct.uid) clearedNextAct else it }
 
@@ -280,12 +283,17 @@ class CombatViewModel(
 
     private fun executeMonsterAttackBlow(monster: BattleUnit, target: BattleUnit, blockSuccessful: Boolean, attackType: Int) {
         val current = _activeBattle.value ?: return
+        if (current.isFinished || current.playerUnits.none { it.uid == target.uid }) return
         
+        // Check if defender is in Guard mode (+50% defense)
+        val isGuarding = target.statusEffect == "GUARD" || (current.playerUnits.find { it.uid == target.uid }?.statusEffect == "GUARD")
+        val effectiveDefense = if (isGuarding) (target.defense * 1.5f).toInt() else target.defense
+
         // Calculate damage according to attack type
         val damage = when (attackType) {
-            0 -> max(6, monster.attack - target.defense) // Regular
-            1 -> max(12, (monster.attack * 1.8f).toInt() - target.defense) // Heavy Crit
-            else -> max(10, monster.attack - (target.defense * 0.4f).toInt()) // Ignored defense
+            0 -> max(6, monster.attack - effectiveDefense) // Regular
+            1 -> max(12, (monster.attack * 1.8f).toInt() - effectiveDefense) // Heavy Crit
+            else -> max(10, monster.attack - (effectiveDefense * 0.4f).toInt()) // Ignored defense
         }
 
         val updatedPUnits = current.playerUnits.map { unit ->
@@ -469,7 +477,16 @@ class CombatViewModel(
             add("🛡️ ${actor.name} вошёл в глухую оборону (+50% Защиты до начала следующего хода).")
         }
 
+        val updatedPUnits = current.playerUnits.map { unit ->
+            if (unit.uid == actor.uid) {
+                unit.copy(statusEffect = "GUARD", statusDuration = 1)
+            } else {
+                unit
+            }
+        }
+
         _activeBattle.value = current.copy(
+            playerUnits = updatedPUnits,
             activeUnitUid = null,
             combatLog = log
         )

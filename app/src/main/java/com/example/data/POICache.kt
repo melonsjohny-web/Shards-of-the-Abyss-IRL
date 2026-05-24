@@ -14,7 +14,7 @@ class POICache {
     private val CACHE_RADIUS = 1000.0       // 1000 meters cache radius limits API updates
     private val CACHE_TTL = 10 * 60 * 1000L  // 10 minutes cache lifespan
 
-    fun get(lat: Double, lon: Double): List<PointOfInterest>? {
+    fun get(lat: Double, lon: Double): List<PointOfInterest>? = synchronized(this) {
         val entry = cache ?: return null
         if (System.currentTimeMillis() - entry.timestamp > CACHE_TTL) return null
 
@@ -24,11 +24,11 @@ class POICache {
         return entry.pois
     }
 
-    fun put(lat: Double, lon: Double, pois: List<PointOfInterest>) {
+    fun put(lat: Double, lon: Double, pois: List<PointOfInterest>) = synchronized(this) {
         cache = CacheEntry(pois, lat, lon)
     }
 
-    fun invalidate() {
+    fun invalidate() = synchronized(this) {
         cache = null
     }
 

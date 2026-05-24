@@ -204,6 +204,9 @@ interface GameDao {
     @Query("DELETE FROM heroes WHERE id = :heroId")
     suspend fun deleteHero(heroId: String)
 
+    @Query("UPDATE gear SET equippedHeroId = NULL WHERE equippedHeroId = :heroId")
+    suspend fun unequipGearForHero(heroId: String)
+
     @Query("SELECT * FROM gear")
     fun getAllGear(): Flow<List<GearItemEntity>>
 

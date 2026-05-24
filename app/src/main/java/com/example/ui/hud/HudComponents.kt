@@ -1783,6 +1783,49 @@ fun PartyScreen(state: GameUiState.Loaded, viewModel: GameViewModel) {
         selectedHero = state.heroes.first()
     }
 
+    var itemToDismantle by remember { mutableStateOf<GearItem?>(null) }
+
+    if (itemToDismantle != null) {
+        AlertDialog(
+            onDismissRequest = { itemToDismantle = null },
+            title = {
+                Text(
+                    text = "Разобрать снаряжение?",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp
+                )
+            },
+            text = {
+                Text(
+                    text = "Вы действительно хотите утилизировать предмет «${itemToDismantle?.name}» [${itemToDismantle?.rarity?.title}]?\n\nВы получите часть астральных осколков, но этот предмет будет навсегда уничтожен!",
+                    color = Color.White.copy(alpha = 0.8f),
+                    fontSize = 13.sp
+                )
+            },
+            containerColor = CardLighterBg,
+            confirmButton = {
+                Button(
+                    onClick = {
+                        itemToDismantle?.let { viewModel.dismantleItem(it) }
+                        itemToDismantle = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
+                ) {
+                    Text("Разобрать", color = Color.White)
+                }
+            },
+            dismissButton = {
+                Button(
+                    onClick = { itemToDismantle = null },
+                    colors = ButtonDefaults.buttonColors(containerColor = CardLighterBg)
+                ) {
+                    Text("Отмена", color = Color.White)
+                }
+            }
+        )
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -2069,7 +2112,7 @@ fun PartyScreen(state: GameUiState.Loaded, viewModel: GameViewModel) {
                                 }
 
                                 IconButton(
-                                    onClick = { viewModel.dismantleItem(gear) },
+                                    onClick = { itemToDismantle = gear },
                                     modifier = Modifier.size(28.dp).background(Color.Red.copy(alpha = 0.15f), CircleShape)
                                 ) {
                                     Icon(Icons.Default.DeleteForever, "Dismantle", tint = Color.Red, modifier = Modifier.size(14.dp))
@@ -2116,6 +2159,48 @@ fun StatLabel(title: String, value: String) {
 @Composable
 fun ForgeScreen(state: GameUiState.Loaded, viewModel: GameViewModel) {
     var selectedCraftSlot by remember { mutableStateOf(GearSlot.WEAPON) }
+    var itemToDismantle by remember { mutableStateOf<GearItem?>(null) }
+
+    if (itemToDismantle != null) {
+        AlertDialog(
+            onDismissRequest = { itemToDismantle = null },
+            title = {
+                Text(
+                    text = "Разобрать снаряжение?",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp
+                )
+            },
+            text = {
+                Text(
+                    text = "Вы действительно хотите утилизировать предмет «${itemToDismantle?.name}» [${itemToDismantle?.rarity?.title}]?\n\nВы получите часть астральных осколков, но этот предмет будет навсегда уничтожен!",
+                    color = Color.White.copy(alpha = 0.8f),
+                    fontSize = 13.sp
+                )
+            },
+            containerColor = CardLighterBg,
+            confirmButton = {
+                Button(
+                    onClick = {
+                        itemToDismantle?.let { viewModel.dismantleItem(it) }
+                        itemToDismantle = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
+                ) {
+                    Text("Разобрать", color = Color.White)
+                }
+            },
+            dismissButton = {
+                Button(
+                    onClick = { itemToDismantle = null },
+                    colors = ButtonDefaults.buttonColors(containerColor = CardLighterBg)
+                ) {
+                    Text("Отмена", color = Color.White)
+                }
+            }
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -2931,6 +3016,7 @@ fun CombatArenaLayout(battle: ActiveBattleState, viewModel: GameViewModel) {
                         BlockSwipeQteWidget(
                             targetArrow = qteState.targetDirection,
                             prompt = qteState.promptText,
+                            durationMs = qteState.timeLeftMs,
                             onSwipeResult = { success -> viewModel.feedSwipeResult(success) }
                         )
                     }
@@ -3033,6 +3119,33 @@ fun CombatArenaLayout(battle: ActiveBattleState, viewModel: GameViewModel) {
                                 fontSize = 8.sp,
                                 fontFamily = FontFamily.Monospace
                             )
+
+                            // AP bar (Action Points)
+                            if (!isDead) {
+                                val apRatio = (hero.currentActionPoints / 100f).coerceIn(0f, 1f)
+                                Column(
+                                    modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+                                    verticalArrangement = Arrangement.spacedBy(1.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    LinearProgressIndicator(
+                                        progress = { apRatio },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(3.dp)
+                                            .clip(RoundedCornerShape(1.5.dp)),
+                                        color = IceBlue,
+                                        trackColor = Color.White.copy(alpha = 0.05f)
+                                    )
+                                    Text(
+                                        text = "AP: ${hero.currentActionPoints.toInt()}/100",
+                                        color = IceBlue.copy(alpha = 0.9f),
+                                        fontSize = 7.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -3148,15 +3261,20 @@ fun AttackRingQteWidget(
 ) {
     // Shrinking radius animation from 1.0f factor down to 0.0f
     val animState = remember { Animatable(1.0f) }
+    var hasFinished by remember { mutableStateOf(false) }
 
     LaunchedEffect(prompt) {
+        hasFinished = false
         animState.snapTo(1.0f)
         animState.animateTo(
             targetValue = 0.0f,
             animationSpec = tween(1500, easing = LinearEasing)
         )
         // Hit zero trigger auto failure
-        onQteFinish(0.0f)
+        if (!hasFinished) {
+            hasFinished = true
+            onQteFinish(0.0f)
+        }
     }
 
     val pct = animState.value
@@ -3175,15 +3293,18 @@ fun AttackRingQteWidget(
             modifier = Modifier
                 .size(160.dp)
                 .clickable {
-                    // Calculate score which is closeness to target ring zone (ideal around 0.25 to 0.35 factor)
-                    val score = if (pct in 0.22f..0.38f) {
-                        1.0f // Perfect
-                    } else if (pct in 0.12f..0.50f) {
-                        0.7f // Good
-                    } else {
-                        0.3f // Bad timing
+                    if (!hasFinished) {
+                        hasFinished = true
+                        // Calculate score which is closeness to target ring zone (ideal around 0.25 to 0.35 factor)
+                        val score = if (pct in 0.22f..0.38f) {
+                            1.0f // Perfect
+                        } else if (pct in 0.12f..0.50f) {
+                            0.7f // Good
+                        } else {
+                            0.3f // Bad timing
+                        }
+                        onQteFinish(score)
                     }
-                    onQteFinish(score)
                 },
             contentAlignment = Alignment.Center
         ) {
@@ -3228,8 +3349,21 @@ fun AttackRingQteWidget(
 fun BlockSwipeQteWidget(
     targetArrow: String,
     prompt: String,
+    durationMs: Long,
     onSwipeResult: (Boolean) -> Unit
 ) {
+    val animState = remember { Animatable(1.0f) }
+
+    LaunchedEffect(prompt) {
+        animState.snapTo(1.0f)
+        animState.animateTo(
+            targetValue = 0.0f,
+            animationSpec = tween(durationMs.toInt(), easing = LinearEasing)
+        )
+    }
+
+    val progressValue = animState.value
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -3237,7 +3371,21 @@ fun BlockSwipeQteWidget(
         verticalArrangement = Arrangement.SpaceBetween,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text(prompt, color = Color.Red, fontWeight = FontWeight.Bold, fontSize = 13.sp, textAlign = TextAlign.Center)
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(prompt, color = Color.Red, fontWeight = FontWeight.Bold, fontSize = 13.sp, textAlign = TextAlign.Center)
+            
+            LinearProgressIndicator(
+                progress = { progressValue },
+                modifier = Modifier
+                    .fillMaxWidth(0.81f)
+                    .height(6.dp),
+                color = if (progressValue > 0.4f) FantasyGold else Color.Red,
+                trackColor = Color.White.copy(alpha = 0.12f)
+            )
+        }
 
         // Active directional triggers
         Row(
