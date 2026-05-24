@@ -11,6 +11,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.math.max
 import kotlin.random.Random
 
@@ -24,6 +26,8 @@ class CombatViewModel(
     val activeBattle: StateFlow<ActiveBattleState?> = _activeBattle.asStateFlow()
 
     private var battleTickerJob: Job? = null
+    private val combatMutex = Mutex()
+    private var lastTickTime: Long = 0
 
     fun startTicker(isWeatherBoostingElement: (Element) -> Boolean) {
         battleTickerJob?.cancel()
@@ -32,10 +36,12 @@ class CombatViewModel(
                 val current = _activeBattle.value
                 if (current == null || current.isFinished) {
                     delay(500) // Keep idle overhead close to zero
+                    lastTickTime = 0L
                     continue
                 }
                 if (current.activeUnitUid != null || current.qteState.active) {
                     delay(200) // Sleep during player actions or active QTE
+                    lastTickTime = 0L
                     continue
                 }
                 delay(100)
@@ -149,176 +155,231 @@ class CombatViewModel(
                 combatLog = listOf("Разлом открыт! Инициализация тактических полей воителей."),
                 qteState = CombatQteState(active = false)
             )
+            lastTickTime = System.currentTimeMillis()
         }
     }
 
     private fun tickBattleTimer(isWeatherBoostingElement: (Element) -> Boolean) {
-        val current = _activeBattle.value ?: return
-        if (current.isFinished || current.activeUnitUid != null) return
-
-        val pUnits = current.playerUnits
-        val eUnits = current.enemyUnits
-
-        // Charge AP safely with copies
-        val updatedPUnits = pUnits.map { unit ->
-            if (unit.currentHp <= 0) unit
-            else {
-                var increment = unit.speed * 0.1f
-                if (isWeatherBoostingElement(unit.element)) {
-                    increment *= 1.25f
+        scope.launch(Dispatchers.Default) {
+            combatMutex.withLock {
+                val current = _activeBattle.value ?: return@withLock
+                if (current.isFinished || current.activeUnitUid != null || current.qteState.active) {
+                    lastTickTime = 0L
+                    return@withLock
                 }
-                unit.copy(currentActionPoints = unit.currentActionPoints + increment)
-            }
-        }
 
-        val updatedEUnits = eUnits.map { unit ->
-            if (unit.currentHp <= 0) unit
-            else {
-                var increment = unit.speed * 0.1f
-                if (isWeatherBoostingElement(unit.element)) {
-                    increment *= 1.25f
+                val now = System.currentTimeMillis()
+                if (lastTickTime == 0L) {
+                    lastTickTime = now
+                    return@withLock
                 }
-                unit.copy(currentActionPoints = unit.currentActionPoints + increment)
-            }
-        }
+                val deltaSeconds = (now - lastTickTime) / 1000f
+                lastTickTime = now
 
-        val nextAct = (updatedPUnits + updatedEUnits)
-            .filter { it.currentHp > 0 && it.currentActionPoints >= 100f }
-            .maxByOrNull { it.currentActionPoints }
+                val pUnits = current.playerUnits
+                val eUnits = current.enemyUnits
 
-        if (nextAct != null) {
-            val clearedNextAct = nextAct.copy(
-                currentActionPoints = 0f,
-                statusEffect = if (nextAct.statusEffect == "GUARD") null else nextAct.statusEffect
-            )
-            val finalPUnits = updatedPUnits.map { if (it.uid == nextAct.uid) clearedNextAct else it }
-            val finalEUnits = updatedEUnits.map { if (it.uid == nextAct.uid) clearedNextAct else it }
+                // Charge AP safely with copies and delta time
+                val updatedPUnits = pUnits.map { unit ->
+                    if (unit.currentHp <= 0) unit
+                    else {
+                        var increment = unit.speed * deltaSeconds
+                        if (isWeatherBoostingElement(unit.element)) {
+                            increment *= 1.25f
+                        }
+                        unit.copy(currentActionPoints = unit.currentActionPoints + increment)
+                    }
+                }
 
-            val updateLog = current.combatLog.toMutableList().apply {
-                add("Ход принадлежит: ${nextAct.name} (${nextAct.element.title})")
-            }
+                val updatedEUnits = eUnits.map { unit ->
+                    if (unit.currentHp <= 0) unit
+                    else {
+                        var increment = unit.speed * deltaSeconds
+                        if (isWeatherBoostingElement(unit.element)) {
+                            increment *= 1.25f
+                        }
+                        unit.copy(currentActionPoints = unit.currentActionPoints + increment)
+                    }
+                }
 
-            _activeBattle.value = current.copy(
-                playerUnits = finalPUnits,
-                enemyUnits = finalEUnits,
-                activeUnitUid = nextAct.uid,
-                combatLog = updateLog
-            )
+                val nextAct = (updatedPUnits + updatedEUnits)
+                    .filter { it.currentHp > 0 && it.currentActionPoints >= 100f }
+                    .maxByOrNull { it.currentActionPoints }
 
-            if (!nextAct.isHero) {
-                scope.launch {
-                    delay(1200)
-                    triggerMonsterTurn(clearedNextAct)
+                if (nextAct != null) {
+                    val clearedNextAct = nextAct.copy(
+                        currentActionPoints = 0f,
+                        statusEffect = if (nextAct.statusEffect == "GUARD") null else nextAct.statusEffect
+                    )
+                    
+                    val finalPUnits = updatedPUnits.map { 
+                        if (it.uid == nextAct.uid) clearedNextAct 
+                        else it 
+                    }
+                    val finalEUnits = updatedEUnits.map { 
+                        if (it.uid == nextAct.uid) clearedNextAct 
+                        else it 
+                    }
+
+                    val updateLog = current.combatLog.toMutableList().apply {
+                        add("Ход принадлежит: ${nextAct.name} (${nextAct.element.title})")
+                    }
+
+                    _activeBattle.value = current.copy(
+                        playerUnits = finalPUnits,
+                        enemyUnits = finalEUnits,
+                        activeUnitUid = nextAct.uid,
+                        combatLog = updateLog
+                    )
+
+                    lastTickTime = 0L // Pause AP charging during player choice phase
+
+                    if (!nextAct.isHero) {
+                        scope.launch {
+                            delay(1200)
+                            triggerMonsterTurn(clearedNextAct)
+                        }
+                    }
+                } else {
+                    _activeBattle.value = current.copy(
+                        playerUnits = updatedPUnits,
+                        enemyUnits = updatedEUnits
+                    )
                 }
             }
-        } else {
-            _activeBattle.value = current.copy(
-                playerUnits = updatedPUnits,
-                enemyUnits = updatedEUnits
-            )
         }
     }
 
     private fun triggerMonsterTurn(monster: BattleUnit) {
-        val current = _activeBattle.value ?: return
-        if (current.isFinished) return
+        scope.launch(Dispatchers.Default) {
+            combatMutex.withLock {
+                val current = _activeBattle.value ?: return@withLock
+                if (current.isFinished) return@withLock
 
-        val livingHeroes = current.playerUnits.filter { it.currentHp > 0 }
-        if (livingHeroes.isEmpty()) {
-            resolveBattleFinish(victory = false)
-            return
-        }
+                val livingHeroes = current.playerUnits.filter { it.currentHp > 0 }
+                if (livingHeroes.isEmpty()) {
+                    resolveBattleFinish(victory = false)
+                    return@withLock
+                }
 
-        val target = livingHeroes.random()
-        val directions = listOf("UP", "DOWN", "LEFT", "RIGHT")
-        val randomDir = directions.random()
+                val roll = Random.nextInt(3)
+                // Tactical Monster Targeting selection
+                val target = when (roll) {
+                    0 -> livingHeroes.minByOrNull { it.currentHp } ?: livingHeroes.random() // Focus weakest hp
+                    1 -> livingHeroes.maxByOrNull { it.maxHp } ?: livingHeroes.random() // Attack tank
+                    else -> {
+                        // Elemental Counter Target Match
+                        val counters = livingHeroes.filter { hero ->
+                            (monster.element == Element.BLAZE && hero.element == Element.ICE) ||
+                            (monster.element == Element.ICE && hero.element == Element.BLOOM) ||
+                            (monster.element == Element.BLOOM && hero.element == Element.MIST) ||
+                            (monster.element == Element.MIST && hero.element == Element.BLAZE)
+                        }
+                        counters.randomOrNull() ?: livingHeroes.random()
+                    }
+                }
 
-        // Roll attack type
-        val roll = Random.nextInt(3)
-        val attackName = when (roll) {
-            0 -> "обычную атаку"
-            1 -> "💥 ТЯЖЕЛЫЙ КРИТИЧЕСКИЙ УДАР 💥"
-            else -> "🔥 СТИХИЙНОЕ ДЫХАНИЕ 🔥"
-        }
-        val durationMs = when (roll) {
-            0 -> 1500L
-            1 -> 950L
-            else -> 1200L
-        }
+                val directions = listOf("UP", "DOWN", "LEFT", "RIGHT")
+                val randomDir = directions.random()
 
-        val prompt = when (roll) {
-            0 -> "Защита! Размашистый удар монстра: Свайп $randomDir за 1.5 сек!"
-            1 -> "БЕРЕГИТЕСЬ! Сверхбыстрый сокрушительный удар: Свайп $randomDir за 0.9 сек!"
-            else -> "ВНИМАНИЕ! Магический выброс Бездны: Свайп $randomDir за 1.2 сек!"
-        }
+                val attackName = when (roll) {
+                    0 -> "обычную атаку"
+                    1 -> "💥 ТЯЖЕЛЫЙ КРИТИЧЕСКИЙ УДАР 💥"
+                    else -> "🔥 СТИХИЙНОЕ ДЫХАНИЕ 🔥"
+                }
+                val durationMs = when (roll) {
+                    0 -> 1500L
+                    1 -> 950L
+                    else -> 1200L
+                }
 
-        val updateLog = current.combatLog.toMutableList().apply {
-            add("👹 ${monster.name} готовит $attackName по воину ${target.name}...")
-        }
+                val prompt = when (roll) {
+                    0 -> "Защита! Размашистый удар монстра: Свайп $randomDir за 1.5 сек!"
+                    1 -> "БЕРЕГИТЕСЬ! Сверхбыстрый сокрушительный удар: Свайп $randomDir за 0.9 сек!"
+                    else -> "ВНИМАНИЕ! Магический выброс Бездны: Свайп $randomDir за 1.2 сек!"
+                }
 
-        _activeBattle.value = current.copy(
-            combatLog = updateLog,
-            qteState = CombatQteState(
-                active = true,
-                type = QteType.BLOCK_SWIPE,
-                promptText = prompt,
-                targetDirection = randomDir,
-                timeLeftMs = durationMs,
-                multiplier = 1.0f + roll * 0.5f // Store action parameter in multiplier to read back in executeMonsterAttackBlow
-            )
-        )
+                val updateLog = current.combatLog.toMutableList().apply {
+                    add("👹 ${monster.name} готовит $attackName по воину ${target.name}...")
+                }
 
-        scope.launch {
-            val currentPoiId = current.poiId
-            delay(durationMs)
-            val state = _activeBattle.value ?: return@launch
-            if (state.poiId != currentPoiId || state.isFinished) return@launch
-            val checkQte = state.qteState
-            
-            // If swipe registered correctly, feedSwipeResult changed multiplier to 0f
-            val blockSuccessful = checkQte.multiplier == 0f
-            executeMonsterAttackBlow(monster, target, blockSuccessful, attackType = roll)
+                _activeBattle.value = current.copy(
+                    combatLog = updateLog,
+                    qteState = CombatQteState(
+                        active = true,
+                        type = QteType.BLOCK_SWIPE,
+                        promptText = prompt,
+                        targetDirection = randomDir,
+                        timeLeftMs = durationMs,
+                        multiplier = 1.0f + roll * 0.5f
+                    )
+                )
+
+                scope.launch {
+                    val currentPoiId = current.poiId
+                    delay(durationMs)
+                    combatMutex.withLock {
+                        val state = _activeBattle.value ?: return@withLock
+                        if (state.poiId != currentPoiId || state.isFinished || !state.qteState.active) return@withLock
+                        
+                        val blockSuccessful = state.qteState.multiplier == 0f
+                        executeMonsterAttackBlow(monster, target, blockSuccessful, attackType = roll)
+                    }
+                }
+            }
         }
     }
 
     private fun executeMonsterAttackBlow(monster: BattleUnit, target: BattleUnit, blockSuccessful: Boolean, attackType: Int) {
         val current = _activeBattle.value ?: return
-        if (current.isFinished || current.playerUnits.none { it.uid == target.uid }) return
-        
-        // Check if defender is in Guard mode (+50% defense)
-        val isGuarding = target.statusEffect == "GUARD" || (current.playerUnits.find { it.uid == target.uid }?.statusEffect == "GUARD")
-        val effectiveDefense = if (isGuarding) (target.defense * 1.5f).toInt() else target.defense
+        if (current.isFinished || current.playerUnits.none { it.uid == target.uid } || !current.qteState.active) return
 
-        // Calculate damage according to attack type
+        // Fetch target again to ensure up-to-date HP and Guard values
+        val actualTarget = current.playerUnits.find { it.uid == target.uid } ?: return
+        val isGuarding = actualTarget.statusEffect == "GUARD"
+        val effectiveDefense = if (isGuarding) (actualTarget.defense * 1.5f).toInt() else actualTarget.defense
+
         val damage = when (attackType) {
             0 -> max(6, monster.attack - effectiveDefense) // Regular
             1 -> max(12, (monster.attack * 1.8f).toInt() - effectiveDefense) // Heavy Crit
             else -> max(10, monster.attack - (effectiveDefense * 0.4f).toInt()) // Ignored defense
         }
 
+        // Apply element counters against player
+        val elementFactor = when {
+            monster.element == Element.BLAZE && actualTarget.element == Element.ICE -> 1.4f
+            monster.element == Element.ICE && actualTarget.element == Element.BLOOM -> 1.4f
+            monster.element == Element.BLOOM && actualTarget.element == Element.MIST -> 1.4f
+            monster.element == Element.MIST && actualTarget.element == Element.BLAZE -> 1.4f
+            monster.element == Element.AETHER && actualTarget.element != Element.AETHER -> 1.4f
+            actualTarget.element == Element.AETHER && monster.element != Element.AETHER -> 1.4f
+            else -> 1.0f
+        }
+        val finalDamage = (damage * elementFactor).toInt()
+
         val updatedPUnits = current.playerUnits.map { unit ->
-            if (unit.uid == target.uid) {
+            if (unit.uid == actualTarget.uid) {
                 if (blockSuccessful) unit
-                else unit.copy(currentHp = max(0, unit.currentHp - damage))
+                else unit.copy(currentHp = max(0, unit.currentHp - finalDamage))
             } else {
                 unit
             }
         }
 
-        val newTargetHp = if (blockSuccessful) target.currentHp else max(0, target.currentHp - damage)
+        val newTargetHp = if (blockSuccessful) actualTarget.currentHp else max(0, actualTarget.currentHp - finalDamage)
         val log = current.combatLog.toMutableList()
 
         if (blockSuccessful) {
-            log.add("🛡️ ${target.name} УСПЕШНО ИЗБЕЖАЛ урон от атаки ${monster.name}!")
+            log.add("🛡️ ${actualTarget.name} УСПЕШНО ИЗБЕЖАЛ урон от атаки ${monster.name}!")
         } else {
             val attackTypeLabel = when (attackType) {
                 0 -> "простым ударом когтей"
                 1 -> "💥 КРИТИЧЕСКИМ сокрушением"
                 else -> "🔥 СТИХИЙНЫМ магическим выдохом"
             }
-            log.add("💥 ${monster.name} наносит ${target.name} $damage урона $attackTypeLabel!")
+            log.add("💥 ${monster.name} наносит ${actualTarget.name} $finalDamage урона $attackTypeLabel! (Элемент: ${elementFactor}x)")
             if (newTargetHp <= 0) {
-                log.add("💀 Хранитель ${target.name} повержен!")
+                log.add("💀 Хранитель ${actualTarget.name} повержен!")
             }
         }
 
@@ -330,166 +391,206 @@ class CombatViewModel(
         )
 
         checkBattleFinishConditions()
+    }
+
+    fun setCombatTarget(targetUid: String) {
+        scope.launch(Dispatchers.Default) {
+            combatMutex.withLock {
+                val current = _activeBattle.value ?: return@withLock
+                val target = current.enemyUnits.find { it.uid == targetUid && it.currentHp > 0 } ?: return@withLock
+                _activeBattle.value = current.copy(selectedTargetUid = target.uid)
+                showToast("Цель зафиксирована: ${target.name}")
+            }
+        }
     }
 
     fun playerTriggerStrikeAttack() {
-        val current = _activeBattle.value ?: return
-        val activeUid = current.activeUnitUid ?: return
-        current.playerUnits.find { it.uid == activeUid } ?: return
+        scope.launch(Dispatchers.Default) {
+            combatMutex.withLock {
+                val current = _activeBattle.value ?: return@withLock
+                val activeUid = current.activeUnitUid ?: return@withLock
+                current.playerUnits.find { it.uid == activeUid } ?: return@withLock
 
-        _activeBattle.value = current.copy(
-            qteState = CombatQteState(
-                active = true,
-                type = QteType.ATTACK_RING,
-                promptText = "🎯 ТАП в идеальной границе сужения кольца!",
-                timeLeftMs = 1500,
-                multiplier = 1.0f
-            )
-        )
+                _activeBattle.value = current.copy(
+                    qteState = CombatQteState(
+                        active = true,
+                        type = QteType.ATTACK_RING,
+                        promptText = "🎯 ТАП в идеальной границе сужения кольца!",
+                        timeLeftMs = 1500,
+                        multiplier = 1.0f
+                    )
+                )
+            }
+        }
     }
 
     fun playerTriggerUltimateAttack() {
-        val current = _activeBattle.value ?: return
-        val activeUid = current.activeUnitUid ?: return
-        current.playerUnits.find { it.uid == activeUid } ?: return
+        scope.launch(Dispatchers.Default) {
+            combatMutex.withLock {
+                val current = _activeBattle.value ?: return@withLock
+                val activeUid = current.activeUnitUid ?: return@withLock
+                current.playerUnits.find { it.uid == activeUid } ?: return@withLock
 
-        _activeBattle.value = current.copy(
-            qteState = CombatQteState(
-                active = true,
-                type = QteType.ATTACK_RING,
-                promptText = "🌟 СУПЕРПРИЕМ СТИХИЙ! ТАП в идеальной границе сужения!",
-                timeLeftMs = 1100, // Slightly faster, high stakes!
-                multiplier = 1.8f
-            )
-        )
+                _activeBattle.value = current.copy(
+                    qteState = CombatQteState(
+                        active = true,
+                        type = QteType.ATTACK_RING,
+                        promptText = "🌟 СУПЕРПРИЕМ СТИХИЙ! ТАП в идеальной границе сужения!",
+                        timeLeftMs = 1100,
+                        multiplier = 1.8f
+                    )
+                )
+            }
+        }
     }
 
     fun playerTriggerHeal() {
-        val current = _activeBattle.value ?: return
-        val activeUid = current.activeUnitUid ?: return
-        val actor = current.playerUnits.find { it.uid == activeUid } ?: return
+        scope.launch(Dispatchers.Default) {
+            combatMutex.withLock {
+                val current = _activeBattle.value ?: return@withLock
+                val activeUid = current.activeUnitUid ?: return@withLock
+                val actor = current.playerUnits.find { it.uid == activeUid } ?: return@withLock
 
-        val healAmount = (actor.maxHp * 0.35f).toInt()
-        val updatedPUnits = current.playerUnits.map { unit ->
-            if (unit.uid == actor.uid) {
-                unit.copy(currentHp = (unit.currentHp + healAmount).coerceAtMost(unit.maxHp))
-            } else {
-                unit
+                val healAmount = (actor.maxHp * 0.35f).toInt()
+                val updatedPUnits = current.playerUnits.map { unit ->
+                    if (unit.uid == actor.uid) {
+                        unit.copy(currentHp = (unit.currentHp + healAmount).coerceAtMost(unit.maxHp))
+                    } else {
+                        unit
+                    }
+                }
+
+                val log = current.combatLog.toMutableList().apply {
+                    add("✨ Оракул Помощи: ${actor.name} исцеляет свои раны на $healAmount ОЗ древней формулой Жизни!")
+                }
+
+                _activeBattle.value = current.copy(
+                    playerUnits = updatedPUnits,
+                    activeUnitUid = null,
+                    combatLog = log
+                )
+
+                checkBattleFinishConditions()
             }
         }
-
-        val log = current.combatLog.toMutableList().apply {
-            add("✨ Оракул Помощи: ${actor.name} исцеляет свои раны на $healAmount ОЗ древней формулой Жизни!")
-        }
-
-        _activeBattle.value = current.copy(
-            playerUnits = updatedPUnits,
-            activeUnitUid = null,
-            combatLog = log
-        )
-
-        checkBattleFinishConditions()
     }
 
     fun playerFinishQTEHit(successRatio: Float) {
-        val current = _activeBattle.value ?: return
-        val activeUid = current.activeUnitUid ?: return
-        val actor = current.playerUnits.find { it.uid == activeUid } ?: return
+        scope.launch(Dispatchers.Default) {
+            combatMutex.withLock {
+                val current = _activeBattle.value ?: return@withLock
+                val activeUid = current.activeUnitUid ?: return@withLock
+                val actor = current.playerUnits.find { it.uid == activeUid } ?: return@withLock
 
-        val livingEnemies = current.enemyUnits.filter { it.currentHp > 0 }
-        if (livingEnemies.isEmpty()) {
-            checkBattleFinishConditions()
-            return
-        }
+                val livingEnemies = current.enemyUnits.filter { it.currentHp > 0 }
+                if (livingEnemies.isEmpty()) {
+                    checkBattleFinishConditions()
+                    return@withLock
+                }
 
-        val target = livingEnemies.first()
+                // Lock on selected target if valid and alive, otherwise target first living
+                val target = current.enemyUnits.find { it.uid == current.selectedTargetUid && it.currentHp > 0 }
+                    ?: livingEnemies.first()
 
-        val qteMultiplier = when {
-            successRatio > 0.85f -> 2.2f
-            successRatio > 0.65f -> 1.5f
-            else -> 0.6f
-        }
+                val qteMultiplier = when {
+                    successRatio > 0.85f -> 2.2f
+                    successRatio > 0.65f -> 1.5f
+                    else -> 0.6f
+                }
 
-        val elementFactor = when {
-            actor.element == Element.ICE && target.element == Element.MIST -> 1.5f
-            actor.element == Element.BLAZE && target.element == Element.ICE -> 1.5f
-            actor.element == Element.MIST && target.element == Element.BLAZE -> 1.5f
-            target.element == Element.AETHER -> 1.0f
-            else -> 1.0f
-        }
+                // Expanded strategic 5-element counter system
+                val elementFactor = when {
+                    actor.element == Element.BLAZE && target.element == Element.ICE -> 1.5f
+                    actor.element == Element.ICE && target.element == Element.BLOOM -> 1.5f
+                    actor.element == Element.BLOOM && target.element == Element.MIST -> 1.5f
+                    actor.element == Element.MIST && target.element == Element.BLAZE -> 1.5f
+                    actor.element == Element.AETHER && target.element != Element.AETHER -> 1.5f
+                    target.element == Element.AETHER && actor.element != Element.AETHER -> 1.5f
+                    else -> 1.0f
+                }
 
-        val baseDamage = max(10, actor.attack - target.defense)
-        val actionFactor = current.qteState.multiplier // our action parameter scale
-        val totalDamage = (baseDamage * qteMultiplier * elementFactor * actionFactor).toInt()
+                val baseDamage = max(10, actor.attack - target.defense)
+                val actionFactor = current.qteState.multiplier
+                val totalDamage = (baseDamage * qteMultiplier * elementFactor * actionFactor).toInt()
 
-        val updatedEUnits = current.enemyUnits.map { unit ->
-            if (unit.uid == target.uid) {
-                unit.copy(currentHp = max(0, unit.currentHp - totalDamage))
-            } else {
-                unit
+                val updatedEUnits = current.enemyUnits.map { unit ->
+                    if (unit.uid == target.uid) {
+                        unit.copy(currentHp = max(0, unit.currentHp - totalDamage))
+                    } else {
+                        unit
+                    }
+                }
+
+                val isUltimate = actionFactor > 1.2f
+                val ratingText = when {
+                    successRatio > 0.85f -> "СВЕРХ-УСПЕШНО! ✨"
+                    successRatio > 0.65f -> "ОТЛИЧНО! 👍"
+                    else -> "Слабый Тайминг... 💤"
+                }
+
+                val actionName = if (isUltimate) "💥 СУПЕРПРИЕМ СТИХИЙ" else "⚔️ Навык"
+                val comboCombo = if (actor.element == Element.ICE && totalDamage > 30) " [ЗАМОРОЗКА!]" else ""
+
+                val log = current.combatLog.toMutableList().apply {
+                    add("⚔️ $ratingText ${actor.name} применяет $actionName по ${target.name}.")
+                    add("$totalDamage урона стихией ${actor.element.title}$comboCombo. (Множитель: ${elementFactor}x)")
+                    if (target.currentHp - totalDamage <= 0) {
+                        add("💥 Порождение хаоса ${target.name} испарилось в изначальный эфир!")
+                    }
+                }
+
+                _activeBattle.value = current.copy(
+                    enemyUnits = updatedEUnits,
+                    activeUnitUid = null,
+                    qteState = CombatQteState(active = false),
+                    combatLog = log
+                )
+
+                checkBattleFinishConditions()
             }
         }
-
-        val isUltimate = actionFactor > 1.2f
-        val ratingText = when {
-            successRatio > 0.85f -> "СВЕРХ-УСПЕШНО! ✨"
-            successRatio > 0.65f -> "ОТЛИЧНО! 👍"
-            else -> "Слабый Тайминг... 💤"
-        }
-
-        val actionName = if (isUltimate) "💥 СУПЕРПРИЕМ СТИХИЙ" else "⚔️ Навык"
-        val comboCombo = if (actor.element == Element.ICE && totalDamage > 30) " [ЗАМОРОЗКА!]" else ""
-        
-        val log = current.combatLog.toMutableList().apply {
-            add("⚔️ $ratingText ${actor.name} применяет $actionName по ${target.name}.")
-            add("$totalDamage урона стихией ${actor.element.title}$comboCombo. (Множитель: ${elementFactor}x)")
-            if (target.currentHp - totalDamage <= 0) {
-                add("💥 Порождение хаоса ${target.name} испарилось в изначальный эфир!")
-            }
-        }
-
-        _activeBattle.value = current.copy(
-            enemyUnits = updatedEUnits,
-            activeUnitUid = null,
-            qteState = CombatQteState(active = false),
-            combatLog = log
-        )
-
-        checkBattleFinishConditions()
     }
 
     fun feedSwipeResult(correct: Boolean) {
-        val current = _activeBattle.value ?: return
-        if (correct) {
-            _activeBattle.value = current.copy(
-                qteState = current.qteState.copy(multiplier = 0f, promptText = "УСПЕШНЫЙ БЛОК! 🛡️")
-            )
-            showToast("Кувырок Блокирован QTE!")
+        scope.launch(Dispatchers.Default) {
+            combatMutex.withLock {
+                val current = _activeBattle.value ?: return@withLock
+                if (correct) {
+                    _activeBattle.value = current.copy(
+                        qteState = current.qteState.copy(multiplier = 0f, promptText = "УСПЕШНЫЙ БЛОК! 🛡️")
+                    )
+                    showToast("Кувырок Блокирован QTE!")
+                }
+            }
         }
     }
 
     fun playerDefenseGuard() {
-        val current = _activeBattle.value ?: return
-        val activeUid = current.activeUnitUid ?: return
-        val actor = current.playerUnits.find { it.uid == activeUid } ?: return
+        scope.launch(Dispatchers.Default) {
+            combatMutex.withLock {
+                val current = _activeBattle.value ?: return@withLock
+                val activeUid = current.activeUnitUid ?: return@withLock
+                val actor = current.playerUnits.find { it.uid == activeUid } ?: return@withLock
 
-        val log = current.combatLog.toMutableList().apply {
-            add("🛡️ ${actor.name} вошёл в глухую оборону (+50% Защиты до начала следующего хода).")
-        }
+                val log = current.combatLog.toMutableList().apply {
+                    add("🛡️ ${actor.name} вошёл в глухую оборону (+50% Защиты до начала следующего хода).")
+                }
 
-        val updatedPUnits = current.playerUnits.map { unit ->
-            if (unit.uid == actor.uid) {
-                unit.copy(statusEffect = "GUARD", statusDuration = 1)
-            } else {
-                unit
+                val updatedPUnits = current.playerUnits.map { unit ->
+                    if (unit.uid == actor.uid) {
+                        unit.copy(statusEffect = "GUARD", statusDuration = 1)
+                    } else {
+                        unit
+                    }
+                }
+
+                _activeBattle.value = current.copy(
+                    playerUnits = updatedPUnits,
+                    activeUnitUid = null,
+                    combatLog = log
+                )
             }
         }
-
-        _activeBattle.value = current.copy(
-            playerUnits = updatedPUnits,
-            activeUnitUid = null,
-            combatLog = log
-        )
     }
 
     fun runFromBattle(navigateBack: () -> Unit) {
@@ -512,124 +613,129 @@ class CombatViewModel(
 
     private fun resolveBattleFinish(victory: Boolean) {
         val current = _activeBattle.value ?: return
-        scope.launch {
-            if (victory) {
-                val baseGold = Random.nextInt(120, 300)
-                val baseShards = Random.nextInt(5, 15)
-                val xpEarned = 40
+        scope.launch(Dispatchers.IO) {
+            combatMutex.withLock {
+                val doubleCheck = _activeBattle.value ?: return@withLock
+                if (doubleCheck.isFinished) return@withLock
 
-                val profile = repository.getProfileSync()
-                if (profile != null) {
-                    val isNewGearEarned = Random.nextFloat() > 0.4f
-                    var gearDrop: GearItem? = null
+                if (victory) {
+                    val baseGold = Random.nextInt(120, 300)
+                    val baseShards = Random.nextInt(5, 15)
+                    val xpEarned = 40
 
-                    if (isNewGearEarned) {
-                        val gearRarity = when (Random.nextInt(100)) {
-                            in 0..50 -> Rarity.COMMON
-                            in 51..85 -> Rarity.RARE
-                            in 86..96 -> Rarity.EPIC
-                            else -> Rarity.LEGENDARY
-                        }
-                        val gearType = GearSlot.entries.random()
-                        val gearLvl = profile.level
-                        
-                        val affs = mutableListOf<GearAffix>()
-                        val statPools = listOf("Сила", "ОЗ", "Защита", "Скорость")
-                        val affixCount = when (gearRarity) {
-                            Rarity.COMMON -> 0
-                            Rarity.UNCOMMON -> 1
-                            Rarity.RARE -> 2
-                            Rarity.EPIC -> 3
-                            Rarity.LEGENDARY -> 4
-                            Rarity.MYTHIC -> 5
-                        }
-                        for (i in 0 until affixCount) {
-                            val stat = statPools.random()
-                            val valRoll = when (stat) {
-                                "ОЗ" -> Random.nextInt(20, 80)
-                                "Сила" -> Random.nextInt(4, 15)
-                                "Защита" -> Random.nextInt(3, 10)
-                                else -> Random.nextInt(2, 6)
+                    val profile = repository.getProfileSync()
+                    if (profile != null) {
+                        val isNewGearEarned = Random.nextFloat() > 0.4f
+                        var gearDrop: GearItem? = null
+
+                        if (isNewGearEarned) {
+                            val gearRarity = when (Random.nextInt(100)) {
+                                in 0..50 -> Rarity.COMMON
+                                in 51..85 -> Rarity.RARE
+                                in 86..96 -> Rarity.EPIC
+                                else -> Rarity.LEGENDARY
                             }
-                            affs.add(GearAffix(stat, valRoll))
+                            val gearType = GearSlot.entries.random()
+                            val gearLvl = profile.level
+                            
+                            val affs = mutableListOf<GearAffix>()
+                            val statPools = listOf("Сила", "ОЗ", "Защита", "Скорость")
+                            val affixCount = when (gearRarity) {
+                                Rarity.COMMON -> 0
+                                Rarity.UNCOMMON -> 1
+                                Rarity.RARE -> 2
+                                Rarity.EPIC -> 3
+                                Rarity.LEGENDARY -> 4
+                                Rarity.MYTHIC -> 5
+                            }
+                            for (i in 0 until affixCount) {
+                                val stat = statPools.random()
+                                val valRoll = when (stat) {
+                                    "ОЗ" -> Random.nextInt(20, 80)
+                                    "Сила" -> Random.nextInt(4, 15)
+                                    "Защита" -> Random.nextInt(3, 10)
+                                    else -> Random.nextInt(2, 6)
+                                }
+                                affs.add(GearAffix(stat, valRoll))
+                            }
+
+                            gearDrop = GearItem(
+                                id = "gear_drop_${System.currentTimeMillis()}",
+                                name = "${gearRarity.title} ${gearType.title}",
+                                slot = gearType,
+                                rarity = gearRarity,
+                                levelReq = gearLvl,
+                                basePower = 10 + gearLvl * 6,
+                                affixes = affs,
+                                equippedHeroId = null
+                            )
+                            repository.saveGearItem(gearDrop)
                         }
 
-                        gearDrop = GearItem(
-                            id = "gear_drop_${System.currentTimeMillis()}",
-                            name = "${gearRarity.title} ${gearType.title}",
-                            slot = gearType,
-                            rarity = gearRarity,
-                            levelReq = gearLvl,
-                            basePower = 10 + gearLvl * 6,
-                            affixes = affs,
-                            equippedHeroId = null
+                        var newXp = profile.xp + xpEarned
+                        var newLvl = profile.level
+                        val targetXp = profile.level * 100
+                        if (newXp >= targetXp) {
+                            newXp -= targetXp
+                            newLvl += 1
+                            showToast("🎉 ВЫ ПОВЫСИЛИ УРОВЕНЬ! Текущий уровень: $newLvl!")
+                        }
+
+                        val updatedProfile = profile.copy(
+                            level = newLvl,
+                            xp = newXp,
+                            gold = profile.gold + baseGold,
+                            abyssalShards = profile.abyssalShards + baseShards,
+                            dailyDungeonsCleared = profile.dailyDungeonsCleared + 1
                         )
-                        repository.saveGearItem(gearDrop)
-                    }
+                        repository.saveProfile(updatedProfile)
 
-                    var newXp = profile.xp + xpEarned
-                    var newLvl = profile.level
-                    val targetXp = profile.level * 100
-                    if (newXp >= targetXp) {
-                        newXp -= targetXp
-                        newLvl += 1
-                        showToast("🎉 ВЫ ПОВЫСИЛИ УРОВЕНЬ! Текущий уровень: $newLvl!")
-                    }
-
-                    val updatedProfile = profile.copy(
-                        level = newLvl,
-                        xp = newXp,
-                        gold = profile.gold + baseGold,
-                        abyssalShards = profile.abyssalShards + baseShards,
-                        dailyDungeonsCleared = profile.dailyDungeonsCleared + 1
-                    )
-                    repository.saveProfile(updatedProfile)
-
-                    // Put completed POI on cooldown inside Room database
-                    val poisList = repository.getAllPOIsSync()
-                    val matchPoi = poisList.find { it.id == current.poiId }
-                    if (matchPoi != null) {
-                        val cooldownPeriodMs = matchPoi.type.cooldownMinutes * 60 * 1000L
-                        val cooledPoi = matchPoi.copy(cooldownUntil = System.currentTimeMillis() + cooldownPeriodMs)
-                        repository.savePOIs(listOf(cooledPoi))
-                    }
-
-                    val allTeam = repository.getAllHeroesSync()
-                    for (hero in allTeam) {
-                        val upHero = hero.copy(xp = hero.xp + xpEarned)
-                        var heroLvl = upHero.currentLevel
-                        var hXp = upHero.xp
-                        if (hXp >= heroLvl * 80) {
-                            hXp -= heroLvl * 80
-                            heroLvl += 1
+                        // Put completed POI on cooldown inside Room database
+                        val poisList = repository.getAllPOIsSync()
+                        val matchPoi = poisList.find { it.id == doubleCheck.poiId }
+                        if (matchPoi != null) {
+                            val cooldownPeriodMs = matchPoi.type.cooldownMinutes * 60 * 1000L
+                            val cooledPoi = matchPoi.copy(cooldownUntil = System.currentTimeMillis() + cooldownPeriodMs)
+                            repository.savePOIs(listOf(cooledPoi))
                         }
-                        repository.saveHero(upHero.copy(currentLevel = heroLvl, xp = hXp))
-                    }
 
-                    _activeBattle.value = current.copy(
-                        isFinished = true,
-                        isVictory = true,
-                        xpReward = xpEarned,
-                        goldReward = baseGold,
-                        shardReward = baseShards,
-                        gearReward = gearDrop,
-                        combatLog = current.combatLog.toMutableList().apply {
-                            add("🏆 ПОБЕДА! Врата Бездны запечатаны.")
-                            add("Награда: +$xpEarned XP, +$baseGold Золота, +$baseShards Осколков.")
-                            if (gearDrop != null) {
-                                add("🎁 Получен предмет: [${gearDrop.rarity.title}] ${gearDrop.name}")
+                        val allTeam = repository.getAllHeroesSync()
+                        for (hero in allTeam) {
+                            val upHero = hero.copy(xp = hero.xp + xpEarned)
+                            var heroLvl = upHero.currentLevel
+                            var hXp = upHero.xp
+                            if (hXp >= heroLvl * 80) {
+                                hXp -= heroLvl * 80
+                                heroLvl += 1
                             }
+                            repository.saveHero(upHero.copy(currentLevel = heroLvl, xp = hXp))
+                        }
+
+                        _activeBattle.value = doubleCheck.copy(
+                            isFinished = true,
+                            isVictory = true,
+                            xpReward = xpEarned,
+                            goldReward = baseGold,
+                            shardReward = baseShards,
+                            gearReward = gearDrop,
+                            combatLog = doubleCheck.combatLog.toMutableList().apply {
+                                add("🏆 ПОБЕДА! Врата Бездны запечатаны.")
+                                add("Награда: +$xpEarned XP, +$baseGold Золота, +$baseShards Осколков.")
+                                if (gearDrop != null) {
+                                    add("🎁 Получен предмет: [${gearDrop.rarity.title}] ${gearDrop.name}")
+                                }
+                            }
+                        )
+                    }
+                } else {
+                    _activeBattle.value = doubleCheck.copy(
+                        isFinished = true,
+                        isVictory = false,
+                        combatLog = doubleCheck.combatLog.toMutableList().apply {
+                            add("💀 ПОРАЖЕНИЕ! Герои потеряли сознание и эвакуированы в Святилище.")
                         }
                     )
                 }
-            } else {
-                _activeBattle.value = current.copy(
-                    isFinished = true,
-                    isVictory = false,
-                    combatLog = current.combatLog.toMutableList().apply {
-                        add("💀 ПОРАЖЕНИЕ! Герои потеряли сознание и эвакуированы в Святилище.")
-                    }
-                )
             }
         }
     }

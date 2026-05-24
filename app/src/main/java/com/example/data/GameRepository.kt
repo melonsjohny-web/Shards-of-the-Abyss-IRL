@@ -77,7 +77,28 @@ class GameRepository(private val gameDao: GameDao) {
         gameDao.getAllPOIsSync().map { it.toDomain() }
 
     suspend fun savePOIs(pois: List<PointOfInterest>) {
-        gameDao.insertPOIs(pois.map { it.toEntity() })
+        val now = System.currentTimeMillis()
+        // Prune any expired cooldowns on this write to maintain a lean database structure
+        gameDao.pruneExpiredCooldowns(now)
+
+        // Capture any active non-zero cooldowns from the incoming entries and save them
+        val activeCooldowns = pois.filter { it.cooldownUntil > now }
+        if (activeCooldowns.isNotEmpty()) {
+            gameDao.savePoiCooldowns(activeCooldowns.map { PoiCooldownEntity(it.id, it.cooldownUntil) })
+        }
+
+        // Retrieve all stored active cooldown entries to merge back into the cached list
+        val savedCooldowns = gameDao.getAllPoiCooldownsSync().associateBy { it.poiId }
+        val mergedPois = pois.map { poi ->
+            val persists = savedCooldowns[poi.id]
+            if (persists != null && persists.cooldownUntil > now) {
+                poi.copy(cooldownUntil = persists.cooldownUntil)
+            } else {
+                poi
+            }
+        }
+
+        gameDao.insertPOIs(mergedPois.map { it.toEntity() })
     }
 
     suspend fun clearPOIs() {

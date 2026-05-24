@@ -11,7 +11,7 @@ class POICache {
     )
 
     private var cache: CacheEntry? = null
-    private val CACHE_RADIUS = 1000.0       // 1000 meters cache radius limits API updates
+    private val CACHE_RADIUS = 500.0       // 500 meters Cache Radius matches POI_REFRESH_DISTANCE perfectly to avoid dead-zones
     private val CACHE_TTL = 10 * 60 * 1000L  // 10 minutes cache lifespan
 
     fun get(lat: Double, lon: Double): List<PointOfInterest>? = synchronized(this) {

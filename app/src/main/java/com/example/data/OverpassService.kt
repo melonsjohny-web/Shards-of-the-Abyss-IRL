@@ -61,7 +61,7 @@ class OverpassService(private val okHttpClient: OkHttpClient) {
     private fun parseResponse(json: String): List<PointOfInterest> {
         val root = JSONObject(json)
         val elements = root.optJSONArray("elements") ?: return emptyList()
-        val result = mutableListOf<PointOfInterest>()
+        val rawList = mutableListOf<PointOfInterest>()
 
         for (i in 0 until elements.length()) {
             val el = elements.getJSONObject(i)
@@ -90,17 +90,46 @@ class OverpassService(private val okHttpClient: OkHttpClient) {
             if (tags["name"] == null && tags["name:ru"] == null && tags["historic"] == null && tags["tourism"] == null) continue
 
             val osmEl = OverpassElement(id, type, lat, lon, tags)
-            result.add(osmEl.toGamePOI())
+            rawList.add(osmEl.toGamePOI())
         }
 
-        return result
+        // De-duplicate POIs that are extremely close to each other (e.g. <30 meters)
+        // or have the same name within 120 meters (e.g., node+way representation of same shop/park)
+        val filteredList = mutableListOf<PointOfInterest>()
+        for (poi in rawList) {
+            val isDuplicate = filteredList.any { existing ->
+                val dist = calculateDistanceMeters(poi.latitude, poi.longitude, existing.latitude, existing.longitude)
+                dist < 30.0 || (poi.name == existing.name && dist < 120.0)
+            }
+            if (!isDuplicate) {
+                filteredList.add(poi)
+            }
+        }
+
+        return filteredList
+    }
+
+    private fun calculateDistanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val r = 6371000.0
+        val radLat1 = Math.toRadians(lat1)
+        val radLat2 = Math.toRadians(lat2)
+        val deltaLat = Math.toRadians(lat2 - lat1)
+        val deltaLon = Math.toRadians(lon2 - lon1)
+        val a = Math.sin(deltaLat / 2) * Math.sin(deltaLat / 2) +
+                Math.cos(radLat1) * Math.cos(radLat2) *
+                Math.sin(deltaLon / 2) * Math.sin(deltaLon / 2)
+        val c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+        return r * c
     }
 }
 
 fun OverpassElement.determineElement(): Element {
+    val amenity = tags["amenity"] ?: ""
     return when {
         tags["natural"] == "water" || tags["natural"] == "spring" || tags["waterway"] != null || tags["amenity"] == "fountain" -> Element.ICE
         tags["leisure"] == "park" || tags["leisure"] == "garden" || tags["natural"] == "wood" || tags["natural"] == "forest" || tags["landuse"] == "forest" -> Element.BLOOM
+        amenity in listOf("cafe", "restaurant", "fast_food", "food_court") -> Element.BLOOM
+        amenity in listOf("pub", "bar") -> Element.BLAZE
         tags["historic"] != null || tags["amenity"] == "place_of_worship" || tags["religion"] != null -> Element.MIST
         tags["tourism"] == "viewpoint" || tags["natural"] == "peak" || tags["man_made"] == "tower" -> Element.BLAZE
         tags["tourism"] != null || tags["amenity"] == "theatre" || tags["amenity"] == "museum" || tags["amenity"] == "library" -> Element.AETHER

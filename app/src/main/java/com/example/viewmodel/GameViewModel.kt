@@ -47,7 +47,8 @@ data class ActiveBattleState(
     val xpReward: Int = 0,
     val goldReward: Int = 0,
     val shardReward: Int = 0,
-    val gearReward: GearItem? = null
+    val gearReward: GearItem? = null,
+    val selectedTargetUid: String? = null // Selected target tracking
 ) : Serializable
 
 class GameViewModel(
@@ -114,42 +115,41 @@ class GameViewModel(
     val remainingEtherDungeons: StateFlow<Int> = _remainingEtherDungeons.asStateFlow()
 
     // Combined overall state
-    val uiState: StateFlow<GameUiState> = combine(
+    private val orderStateFlow = combine(
         repository.profileFlow,
         repository.allHeroesFlow,
         repository.allGearFlow,
-        repository.allPOIsFlow,
-        repository.allGuildsFlow,
+        repository.allGuildsFlow
+    ) { profile, heroes, gear, guilds ->
+        OrderState(profile, heroes, gear, guilds)
+    }
+
+    private val mapStateFlow = combine(
         currentWeather,
         isNight,
+        repository.allPOIsFlow
+    ) { weather, night, pois ->
+        MapState(weather, night, pois)
+    }
+
+    val uiState: StateFlow<GameUiState> = combine(
+        orderStateFlow,
+        mapStateFlow,
         activeBattle,
         _feedbackMessage
-    ) { array ->
-        val profile = array[0] as? GameProfileEntity
-        @Suppress("UNCHECKED_CAST")
-        val heroes = array[1] as? List<AwakenedHero> ?: emptyList()
-        @Suppress("UNCHECKED_CAST")
-        val gear = array[2] as? List<GearItem> ?: emptyList()
-        @Suppress("UNCHECKED_CAST")
-        val pois = array[3] as? List<PointOfInterest> ?: emptyList()
-        @Suppress("UNCHECKED_CAST")
-        val guilds = array[4] as? List<GuildEntity> ?: emptyList()
-        val weather = array[5] as? WeatherCondition ?: WeatherCondition.CLEAR
-        val isNight = array[6] as? Boolean ?: false
-        val battle = array[7] as? ActiveBattleState
-        val msg = array[8] as? String
-
+    ) { order, mapState, battle, msg ->
+        val profile = order.profile
         if (profile == null) {
             GameUiState.LaunchSelection
         } else {
             GameUiState.Loaded(
                 profile = profile,
-                heroes = heroes,
-                inventory = gear,
-                pois = pois,
-                guilds = guilds,
-                weather = weather,
-                isNightMode = isNight,
+                heroes = order.heroes,
+                inventory = order.gear,
+                pois = mapState.pois,
+                guilds = order.guilds,
+                weather = mapState.weather,
+                isNightMode = mapState.isNight,
                 activeBattle = battle,
                 message = msg
             )
@@ -167,6 +167,15 @@ class GameViewModel(
                 WeatherCondition.HOT_WAVE -> elem == Element.BLAZE
                 WeatherCondition.FOGGY -> elem == Element.MIST
                 WeatherCondition.WINDY -> elem == Element.MIST
+            }
+        }
+
+        // Auto-recover tab selection from COMBAT_SCREEN back to MAP when battle concludes
+        viewModelScope.launch {
+            combatViewModel.activeBattle.collect { battle ->
+                if (battle == null && _currentTab.value == "COMBAT_SCREEN") {
+                    _currentTab.value = "MAP"
+                }
             }
         }
     }
@@ -295,6 +304,10 @@ class GameViewModel(
         if (combatViewModel.activeBattle.value != null) return
         combatViewModel.initiatePOICombat(poi, _selectedCompanionIds.value)
         selectTab("COMBAT_SCREEN")
+    }
+
+    fun setCombatTarget(targetUid: String) {
+        combatViewModel.setCombatTarget(targetUid)
     }
 
     fun visitSanctum(poi: PointOfInterest) {
@@ -620,3 +633,16 @@ class GameViewModel(
         forgeViewModel.clear()
     }
 }
+
+data class OrderState(
+    val profile: GameProfileEntity?,
+    val heroes: List<AwakenedHero>,
+    val gear: List<GearItem>,
+    val guilds: List<GuildEntity>
+)
+
+data class MapState(
+    val weather: WeatherCondition,
+    val isNight: Boolean,
+    val pois: List<PointOfInterest>
+)

@@ -134,7 +134,10 @@ data class HeroEntity(
     val unlockedSkillTreeNodes: List<String>
 )
 
-@Entity(tableName = "gear")
+@Entity(
+    tableName = "gear",
+    indices = [Index(value = ["equippedHeroId"])]
+)
 data class GearItemEntity(
     @PrimaryKey val id: String,
     val name: String,
@@ -148,7 +151,10 @@ data class GearItemEntity(
     val equippedHeroId: String? // null mean inventory
 )
 
-@Entity(tableName = "pois")
+@Entity(
+    tableName = "pois",
+    indices = [Index(value = ["cooldownUntil"])]
+)
 data class PoiEntity(
     @PrimaryKey val id: String,
     val name: String,
@@ -174,6 +180,15 @@ data class GuildEntity(
     val treasuryGold: Int,
     val treasuryShards: Int,
     val territoryCount: Int
+)
+
+@Entity(
+    tableName = "poi_cooldowns",
+    indices = [Index(value = ["cooldownUntil"])]
+)
+data class PoiCooldownEntity(
+    @PrimaryKey val poiId: String,
+    val cooldownUntil: Long
 )
 
 
@@ -234,6 +249,22 @@ interface GameDao {
     @Query("DELETE FROM pois")
     suspend fun clearPOIs()
 
+    // --- POI COOLDOWNS ---
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun savePoiCooldown(cooldown: PoiCooldownEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun savePoiCooldowns(cooldowns: List<PoiCooldownEntity>)
+
+    @Query("SELECT * FROM poi_cooldowns")
+    suspend fun getAllPoiCooldownsSync(): List<PoiCooldownEntity>
+
+    @Query("DELETE FROM poi_cooldowns WHERE cooldownUntil < :now")
+    suspend fun pruneExpiredCooldowns(now: Long)
+
+    @Query("DELETE FROM poi_cooldowns")
+    suspend fun clearPoiCooldowns()
+
     @Query("SELECT * FROM guild_info")
     fun getGuilds(): Flow<List<GuildEntity>>
 
@@ -246,7 +277,7 @@ interface GameDao {
     @Transaction
     suspend fun clearAllData() {
         clearPOIs()
-        // Other clearing
+        clearPoiCooldowns()
     }
 }
 
@@ -257,10 +288,11 @@ interface GameDao {
         HeroEntity::class,
         GearItemEntity::class,
         PoiEntity::class,
-        GuildEntity::class
+        GuildEntity::class,
+        PoiCooldownEntity::class
     ],
     version = 2,
-    exportSchema = false
+    exportSchema = true
 )
 @TypeConverters(GameTypeConverters::class)
 abstract class GameDatabase : RoomDatabase() {
