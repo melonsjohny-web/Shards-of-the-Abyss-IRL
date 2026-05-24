@@ -44,7 +44,7 @@ class CombatViewModel(
         }
     }
 
-    fun initiatePOICombat(poi: PointOfInterest) {
+    fun initiatePOICombat(poi: PointOfInterest, companionIds: Set<String>) {
         scope.launch {
             val heroes = repository.getAllHeroesSync()
             if (heroes.isEmpty()) {
@@ -52,8 +52,21 @@ class CombatViewModel(
                 return@launch
             }
 
-            // Map up to 3 heroes to combat squad with equipment calculations
-            val playerUnits = heroes.take(3).map { hero ->
+            // Lead hero is the Avatar
+            val leadHero = heroes.find { it.id.startsWith("hero_lead_") } ?: heroes.first()
+
+            // Companions block (take selected ones that exist, max 2 helpers)
+            val selectedHelpers = heroes.filter { it.id in companionIds && it.id != leadHero.id }.take(2).toMutableList()
+            if (selectedHelpers.size < 2) {
+                // Pad with any other non-lead heroes to ensure a complete squad of 3 players
+                val extra = heroes.filter { it.id != leadHero.id && it.id !in companionIds }
+                selectedHelpers.addAll(extra.take(2 - selectedHelpers.size))
+            }
+
+            val squad = listOf(leadHero) + selectedHelpers.take(2)
+
+            // Map combat squad with equipment calculations
+            val playerUnits = squad.map { hero ->
                 val gears = repository.getAllGearSync().filter { it.equippedHeroId == hero.id }
                 var extraHp = 0
                 var extraAtk = 0
@@ -217,26 +230,63 @@ class CombatViewModel(
         val directions = listOf("UP", "DOWN", "LEFT", "RIGHT")
         val randomDir = directions.random()
 
+        // Roll attack type
+        val roll = Random.nextInt(3)
+        val attackName = when (roll) {
+            0 -> "обычную атаку"
+            1 -> "💥 ТЯЖЕЛЫЙ КРИТИЧЕСКИЙ УДАР 💥"
+            else -> "🔥 СТИХИЙНОЕ ДЫХАНИЕ 🔥"
+        }
+        val durationMs = when (roll) {
+            0 -> 1500L
+            1 -> 950L
+            else -> 1200L
+        }
+
+        val prompt = when (roll) {
+            0 -> "Защита! Размашистый удар монстра: Свайп $randomDir за 1.5 сек!"
+            1 -> "БЕРЕГИТЕСЬ! Сверхбыстрый сокрушительный удар: Свайп $randomDir за 0.9 сек!"
+            else -> "ВНИМАНИЕ! Магический выброс Бездны: Свайп $randomDir за 1.2 сек!"
+        }
+
+        val updateLog = current.combatLog.toMutableList().apply {
+            add("👹 ${monster.name} готовит $attackName по воину ${target.name}...")
+        }
+
         _activeBattle.value = current.copy(
+            combatLog = updateLog,
             qteState = CombatQteState(
                 active = true,
                 type = QteType.BLOCK_SWIPE,
-                promptText = "Защита! Проведите Свайп: $randomDir",
+                promptText = prompt,
                 targetDirection = randomDir,
-                timeLeftMs = 1200
+                timeLeftMs = durationMs,
+                multiplier = 1.0f + roll * 0.5f // Store action parameter in multiplier to read back in executeMonsterAttackBlow
             )
         )
 
         scope.launch {
-            delay(1200)
-            val checkQte = _activeBattle.value?.qteState ?: return@launch
-            executeMonsterAttackBlow(monster, target, blockSuccessful = (checkQte.multiplier == 0f))
+            val currentPoiId = current.poiId
+            delay(durationMs)
+            val state = _activeBattle.value ?: return@launch
+            if (state.poiId != currentPoiId || state.isFinished) return@launch
+            val checkQte = state.qteState
+            
+            // If swipe registered correctly, feedSwipeResult changed multiplier to 0f
+            val blockSuccessful = checkQte.multiplier == 0f
+            executeMonsterAttackBlow(monster, target, blockSuccessful, attackType = roll)
         }
     }
 
-    private fun executeMonsterAttackBlow(monster: BattleUnit, target: BattleUnit, blockSuccessful: Boolean) {
+    private fun executeMonsterAttackBlow(monster: BattleUnit, target: BattleUnit, blockSuccessful: Boolean, attackType: Int) {
         val current = _activeBattle.value ?: return
-        var damage = max(5, monster.attack - target.defense)
+        
+        // Calculate damage according to attack type
+        val damage = when (attackType) {
+            0 -> max(6, monster.attack - target.defense) // Regular
+            1 -> max(12, (monster.attack * 1.8f).toInt() - target.defense) // Heavy Crit
+            else -> max(10, monster.attack - (target.defense * 0.4f).toInt()) // Ignored defense
+        }
 
         val updatedPUnits = current.playerUnits.map { unit ->
             if (unit.uid == target.uid) {
@@ -251,11 +301,16 @@ class CombatViewModel(
         val log = current.combatLog.toMutableList()
 
         if (blockSuccessful) {
-            log.add("🛡️ ${target.name} УСПЕШНО ОТРАЗИЛ атаку ${monster.name} Свайпом QTE!")
+            log.add("🛡️ ${target.name} УСПЕШНО ИЗБЕЖАЛ урон от атаки ${monster.name}!")
         } else {
-            log.add("💥 ${monster.name} КУСАЕТ ${target.name} за $damage ед. урона.")
+            val attackTypeLabel = when (attackType) {
+                0 -> "простым ударом когтей"
+                1 -> "💥 КРИТИЧЕСКИМ сокрушением"
+                else -> "🔥 СТИХИЙНЫМ магическим выдохом"
+            }
+            log.add("💥 ${monster.name} наносит ${target.name} $damage урона $attackTypeLabel!")
             if (newTargetHp <= 0) {
-                log.add("💀 Воин ${target.name} повержен!")
+                log.add("💀 Хранитель ${target.name} повержен!")
             }
         }
 
@@ -269,7 +324,7 @@ class CombatViewModel(
         checkBattleFinishConditions()
     }
 
-    fun playerTriggerSkillAttack() {
+    fun playerTriggerStrikeAttack() {
         val current = _activeBattle.value ?: return
         val activeUid = current.activeUnitUid ?: return
         current.playerUnits.find { it.uid == activeUid } ?: return
@@ -279,9 +334,53 @@ class CombatViewModel(
                 active = true,
                 type = QteType.ATTACK_RING,
                 promptText = "🎯 ТАП в идеальной границе сужения кольца!",
-                timeLeftMs = 1500
+                timeLeftMs = 1500,
+                multiplier = 1.0f
             )
         )
+    }
+
+    fun playerTriggerUltimateAttack() {
+        val current = _activeBattle.value ?: return
+        val activeUid = current.activeUnitUid ?: return
+        current.playerUnits.find { it.uid == activeUid } ?: return
+
+        _activeBattle.value = current.copy(
+            qteState = CombatQteState(
+                active = true,
+                type = QteType.ATTACK_RING,
+                promptText = "🌟 СУПЕРПРИЕМ СТИХИЙ! ТАП в идеальной границе сужения!",
+                timeLeftMs = 1100, // Slightly faster, high stakes!
+                multiplier = 1.8f
+            )
+        )
+    }
+
+    fun playerTriggerHeal() {
+        val current = _activeBattle.value ?: return
+        val activeUid = current.activeUnitUid ?: return
+        val actor = current.playerUnits.find { it.uid == activeUid } ?: return
+
+        val healAmount = (actor.maxHp * 0.35f).toInt()
+        val updatedPUnits = current.playerUnits.map { unit ->
+            if (unit.uid == actor.uid) {
+                unit.copy(currentHp = (unit.currentHp + healAmount).coerceAtMost(unit.maxHp))
+            } else {
+                unit
+            }
+        }
+
+        val log = current.combatLog.toMutableList().apply {
+            add("✨ Оракул Помощи: ${actor.name} исцеляет свои раны на $healAmount ОЗ древней формулой Жизни!")
+        }
+
+        _activeBattle.value = current.copy(
+            playerUnits = updatedPUnits,
+            activeUnitUid = null,
+            combatLog = log
+        )
+
+        checkBattleFinishConditions()
     }
 
     fun playerFinishQTEHit(successRatio: Float) {
@@ -298,9 +397,9 @@ class CombatViewModel(
         val target = livingEnemies.first()
 
         val qteMultiplier = when {
-            successRatio > 0.85f -> 2.0f
+            successRatio > 0.85f -> 2.2f
             successRatio > 0.65f -> 1.5f
-            else -> 0.7f
+            else -> 0.6f
         }
 
         val elementFactor = when {
@@ -312,7 +411,8 @@ class CombatViewModel(
         }
 
         val baseDamage = max(10, actor.attack - target.defense)
-        val totalDamage = (baseDamage * qteMultiplier * elementFactor).toInt()
+        val actionFactor = current.qteState.multiplier // our action parameter scale
+        val totalDamage = (baseDamage * qteMultiplier * elementFactor * actionFactor).toInt()
 
         val updatedEUnits = current.enemyUnits.map { unit ->
             if (unit.uid == target.uid) {
@@ -322,18 +422,21 @@ class CombatViewModel(
             }
         }
 
+        val isUltimate = actionFactor > 1.2f
         val ratingText = when {
-            successRatio > 0.85f -> "ИДЕАЛЬНО QTE! ✨"
+            successRatio > 0.85f -> "СВЕРХ-УСПЕШНО! ✨"
             successRatio > 0.65f -> "ОТЛИЧНО! 👍"
             else -> "Слабый Тайминг... 💤"
         }
 
+        val actionName = if (isUltimate) "💥 СУПЕРПРИЕМ СТИХИЙ" else "⚔️ Навык"
         val comboCombo = if (actor.element == Element.ICE && totalDamage > 30) " [ЗАМОРОЗКА!]" else ""
+        
         val log = current.combatLog.toMutableList().apply {
-            add("⚔️ $ratingText ${actor.name} применяет Навык по ${target.name}.")
-            add("$totalDamage урона стихией ${actor.element.title}$comboCombo. (Элемент-Множитель: ${elementFactor}x)")
+            add("⚔️ $ratingText ${actor.name} применяет $actionName по ${target.name}.")
+            add("$totalDamage урона стихией ${actor.element.title}$comboCombo. (Множитель: ${elementFactor}x)")
             if (target.currentHp - totalDamage <= 0) {
-                add("💥 Порождение хаоса ${target.name} испарилось в эфир!")
+                add("💥 Порождение хаоса ${target.name} испарилось в изначальный эфир!")
             }
         }
 

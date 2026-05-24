@@ -47,12 +47,15 @@ class OverpassService(private val okHttpClient: OkHttpClient) {
         (
           node["historic"](around:$r,$lat,$lon);
           node["tourism"~"attraction|museum|monument|viewpoint|artwork"](around:$r,$lat,$lon);
-          node["amenity"~"place_of_worship|theatre|library|cinema"](around:$r,$lat,$lon);
+          node["amenity"~"place_of_worship|theatre|library|cinema|bank|atm|cafe|restaurant|pub|bar|fast_food"](around:$r,$lat,$lon);
           node["natural"~"peak|spring|waterfall|cave_entrance"](around:$r,$lat,$lon);
+          node["shop"](around:$r,$lat,$lon);
           way["leisure"~"park|garden|nature_reserve"](around:$r,$lat,$lon);
           way["building"~"cathedral|church|castle|mosque|synagogue"](around:$r,$lat,$lon);
+          way["shop"](around:$r,$lat,$lon);
+          way["amenity"~"cafe|restaurant|pub|bar|bank"](around:$r,$lat,$lon);
         );
-        out center 40;
+        out center 60;
     """.trimIndent()
 
     private fun parseResponse(json: String): List<PointOfInterest> {
@@ -66,18 +69,18 @@ class OverpassService(private val okHttpClient: OkHttpClient) {
             val id = el.getLong("id")
 
             val lat = if (type == "way") {
-                el.optJSONObject("center")?.optDouble("lat") ?: continue
+                el.optJSONObject("center")?.optDouble("lat", Double.NaN) ?: Double.NaN
             } else {
-                el.optDouble("lat")
+                el.optDouble("lat", Double.NaN)
             }
-            if (lat == null || lat.isNaN()) continue
+            if (lat.isNaN()) continue
 
             val lon = if (type == "way") {
-                el.optJSONObject("center")?.optDouble("lon") ?: continue
+                el.optJSONObject("center")?.optDouble("lon", Double.NaN) ?: Double.NaN
             } else {
-                el.optDouble("lon")
+                el.optDouble("lon", Double.NaN)
             }
-            if (lon == null || lon.isNaN()) continue
+            if (lon.isNaN()) continue
 
             val tagsJson = el.optJSONObject("tags") ?: continue
             val tags = buildMap<String, String> {
@@ -105,24 +108,45 @@ fun OverpassElement.determineElement(): Element {
     }
 }
 
+fun OverpassElement.calculateLevel(): Int {
+    val base = when {
+        tags["historic"] == "castle" || tags["historic"] == "fortress" -> 20
+        tags["historic"] == "ruins" -> 12
+        tags["tourism"] == "museum" -> 15
+        tags["amenity"] == "place_of_worship" -> when (tags["religion"]) {
+            "christian" -> if (tags["building"] == "cathedral") 18 else 10
+            "muslim" -> 14
+            else -> 8
+        }
+        tags["leisure"] == "nature_reserve" -> 16
+        tags["leisure"] == "park" -> 6
+        tags["tourism"] == "viewpoint" -> 10
+        tags["natural"] == "peak" -> 20
+        tags["tourism"] == "attraction" -> 12
+        else -> 5
+    }
+    return (base + (id % 5).toInt() - 2).coerceIn(1, 25)
+}
+
 fun OverpassElement.toGamePOI(): PointOfInterest {
     val stableId = "osm_${type}_${id}"
     val poiType = when {
+        tags["shop"] != null -> PoiType.MERCHANT_CARAVAN
+        tags["amenity"] in listOf("cafe", "restaurant", "pub", "bar", "fast_food", "food_court") -> PoiType.TAVERN
+        tags["amenity"] in listOf("bank", "atm") -> PoiType.GUILD_VAULT
+        tags["leisure"] in listOf("park", "garden", "nature_reserve") || tags["natural"] in listOf("wood", "forest") -> PoiType.SACRED_GROVE
         tags["historic"] != null -> PoiType.ABYSSAL_GATE
         tags["tourism"] == "museum" -> PoiType.NEXUS_POINT
-        tags["leisure"] == "park" || tags["leisure"] == "garden" -> PoiType.SANCTUM
-        tags["amenity"] == "place_of_worship" -> PoiType.RIFT
-        tags["natural"] != null -> PoiType.CHAOS_SPIKE
-        tags["tourism"] == "viewpoint" -> PoiType.CHAOS_SPIKE
-        else -> PoiType.RIFT
+        tags["amenity"] == "place_of_worship" -> PoiType.SANCTUM
+        tags["natural"] != null || tags["tourism"] == "viewpoint" -> PoiType.CHAOS_SPIKE
+        else -> if (id % 4L == 0L) PoiType.RANDOM_ENCOUNTER else PoiType.RIFT
     }
 
     val element = determineElement()
     val realNameStr = tags["name:ru"] ?: tags["name"] ?: generateNameFromTags(tags, poiType)
     val displayGameName = realNameStr
 
-    val importance = tags["importance"]?.toFloatOrNull() ?: 0.5f
-    val level = (1 + (importance * 20).toInt()).coerceIn(1, 25)
+    val level = calculateLevel()
 
     return PointOfInterest(
         id = stableId,
@@ -144,20 +168,15 @@ fun OverpassElement.toGamePOI(): PointOfInterest {
 
 fun generateNameFromTags(tags: Map<String, String>, type: PoiType): String {
     val base = when {
-        tags["historic"] == "castle" -> "Замок"
-        tags["historic"] == "ruins" -> "Руины"
-        tags["historic"] == "monument" -> "Памятник"
-        tags["amenity"] == "place_of_worship" -> when (tags["religion"]) {
-            "christian" -> "Церковь"
-            "muslim" -> "Мечеть"
-            "jewish" -> "Синагога"
-            else -> "Святилище"
-        }
-        tags["leisure"] == "park" -> "Парк"
-        tags["tourism"] == "museum" -> "Музей"
-        tags["natural"] == "peak" -> "Вершина"
-        tags["tourism"] == "viewpoint" -> "Смотровая"
+        tags["shop"] != null -> "Обитель купцов Эфира"
+        tags["amenity"] in listOf("cafe", "restaurant", "pub", "bar", "fast_food") -> "Эфирный Приют"
+        tags["amenity"] in listOf("bank", "atm") -> "Хранилище Осколков"
+        tags["leisure"] in listOf("park", "garden") -> "Таинственный Лес"
+        tags["historic"] == "castle" -> "Цитадель"
+        tags["historic"] == "ruins" -> "Развалины древних"
+        tags["historic"] == "monument" -> "Стела Безмолвия"
+        tags["amenity"] == "place_of_worship" -> "Оракул Эфира"
         else -> type.label
     }
-    return "$base Бездны"
+    return base
 }

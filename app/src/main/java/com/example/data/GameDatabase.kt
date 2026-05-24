@@ -161,9 +161,9 @@ data class PoiEntity(
     val lastVisitedTimestamp: Long,
     val isCapturedByGuild: Boolean,
     val capturedGuildName: String?,
-    val osmTags: Map<String, String>,
+    @ColumnInfo(defaultValue = "{}") val osmTags: Map<String, String>,
     val realName: String?,
-    val cooldownUntil: Long
+    @ColumnInfo(defaultValue = "0") val cooldownUntil: Long
 )
 
 @Entity(tableName = "guild_info")
@@ -256,7 +256,7 @@ interface GameDao {
         PoiEntity::class,
         GuildEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 @TypeConverters(GameTypeConverters::class)

@@ -19,6 +19,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.room.Room
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.data.GameDatabase
 import com.example.data.GameRepository
 import com.example.ui.hud.MainGameScreen
@@ -48,12 +50,33 @@ class MainActivity : ComponentActivity() {
         }
 
         try {
+            val migration1To2 = object : Migration(1, 2) {
+                override fun migrate(db: SupportSQLiteDatabase) {
+                    try {
+                        db.execSQL("ALTER TABLE pois ADD COLUMN osmTags TEXT NOT NULL DEFAULT '{}'")
+                    } catch (e: Exception) {
+                        android.util.Log.w("SHARDS_MIGRATION", "Column osmTags might already exist", e)
+                    }
+                    try {
+                        db.execSQL("ALTER TABLE pois ADD COLUMN realName TEXT")
+                    } catch (e: Exception) {
+                        android.util.Log.w("SHARDS_MIGRATION", "Column realName might already exist", e)
+                    }
+                    try {
+                        db.execSQL("ALTER TABLE pois ADD COLUMN cooldownUntil INTEGER NOT NULL DEFAULT 0")
+                    } catch (e: Exception) {
+                        android.util.Log.w("SHARDS_MIGRATION", "Column cooldownUntil might already exist", e)
+                    }
+                }
+            }
+
             // Initialize SQLite Room DB
             database = Room.databaseBuilder(
                 applicationContext,
                 GameDatabase::class.java,
                 "shards_of_abyss_db"
             )
+            .addMigrations(migration1To2)
             .fallbackToDestructiveMigration()
             .build()
 

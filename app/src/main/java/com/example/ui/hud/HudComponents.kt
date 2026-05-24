@@ -9,6 +9,7 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -51,17 +52,59 @@ import com.example.viewmodel.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.alpha
 import kotlin.math.*
 
 // Styling Palette Constants
-val FantasyGold = Color(0xFFE5C158)
-val DarkVoidBg = Color(0xFF0C0D11)
-val CardLighterBg = Color(0xFF161A22)
-val IceBlue = Color(0xFF29B6F6)
-val BloomGreen = Color(0xFF66BB6A)
-val BlazeOrange = Color(0xFFFF7043)
-val MistPurple = Color(0xFFAB47BC)
-val AetherGold = Color(0xFFFFCA28)
+object ShardsDesign {
+    // Базовые поверхности (4 уровня глубины)
+    val Surface0 = Color(0xFF06080E)   // самый тёмный фон приложения
+    val Surface1 = Color(0xFF0D1119)   // фон экранов
+    val Surface2 = Color(0xFF141B27)   // карточки, панели
+    val Surface3 = Color(0xFF1C2535)   // поднятые элементы, выделение
+
+    // Акцент — тёплое золото (один акцент, не два)
+    val Gold = Color(0xFFD4A843)        // чуть темнее, менее кричащий
+    val GoldSoft = Color(0x30D4A843) // 19% alpha для фонов
+
+    // Текст
+    val TextPrimary = Color(0xFFF0EBE0)    // тёплый белый
+    val TextSecondary = Color(0xFF8A8FA8)  // серо-голубой
+    val TextMuted = Color(0xFF4A5166)      // приглушённый
+
+    // Стихии — насыщеннее, контрастнее
+    val Ice = Color(0xFF38BFFF)            // ярче стал
+    val Bloom = Color(0xFF4DD47A)
+    val Blaze = Color(0xFFFF6A35)
+    val Mist = Color(0xFFB86EFF)           // более фиолетовый
+    val Aether = Color(0xFFFFBE30)
+
+    // Редкость предметов
+    val Common = Color(0xFF8FA3B8)
+    val Uncommon = Color(0xFF52C97A)
+    val Rare = Color(0xFF4A9FFF)
+    val Epic = Color(0xFFB060F0)
+    val Legendary = Color(0xFFFF9500)
+    val Mythic = Color(0xFFFF3D6E)
+
+    // Семантические
+    val Danger = Color(0xFFFF4444)
+    val Success = Color(0xFF52C97A)
+    val Warning = Color(0xFFFFBE30)
+    
+    // Специально для карты
+    val MapOverlay = Color(0x2006080E)     // ЛЁГКИЙ оверлей (только 12%)
+    val MapVignette = Color(0x5006080E)    // виньетка только 31%
+}
+
+val FantasyGold = ShardsDesign.Gold
+val DarkVoidBg = ShardsDesign.Surface1
+val CardLighterBg = ShardsDesign.Surface2
+val IceBlue = ShardsDesign.Ice
+val BloomGreen = ShardsDesign.Bloom
+val BlazeOrange = ShardsDesign.Blaze
+val MistPurple = ShardsDesign.Mist
+val AetherGold = ShardsDesign.Aether
 
 @Composable
 fun MainGameScreen(
@@ -70,11 +113,16 @@ fun MainGameScreen(
     viewModel: GameViewModel,
     onTabSelected: (String) -> Unit
 ) {
+    val activeOverlay by viewModel.activeOverlayTab.collectAsState()
+
     when (uiState) {
         is GameUiState.LaunchSelection -> {
             CovenantSelectionScreen(onSelect = { viewModel.selectStartingCovenant(it) })
         }
         is GameUiState.Loaded -> {
+            val isNight = uiState.isNightMode
+            val themeBgColor = if (isNight) Color(0xFF0C0D11) else Color(0xFFF4ECD8)
+
             Scaffold(
                 modifier = Modifier.fillMaxSize(),
                 bottomBar = {
@@ -84,7 +132,7 @@ fun MainGameScreen(
                         battleActive = uiState.activeBattle != null
                     )
                 },
-                containerColor = DarkVoidBg
+                containerColor = themeBgColor
             ) { innerPadding ->
                 Box(
                     modifier = Modifier
@@ -101,10 +149,8 @@ fun MainGameScreen(
                         when (currentTab) {
                             "MAP" -> MapDashboardScreen(state = uiState, viewModel = viewModel)
                             "PARTY" -> PartyScreen(state = uiState, viewModel = viewModel)
-                            "FORGE" -> ForgeScreen(state = uiState, viewModel = viewModel)
-                            "SUMMON" -> SummonPortalScreen(state = uiState, viewModel = viewModel)
-                            "GUILD" -> GuildCovenantsScreen(state = uiState, viewModel = viewModel)
                             "SETTINGS" -> SettingsSyncScreen(state = uiState, viewModel = viewModel)
+                            else -> MapDashboardScreen(state = uiState, viewModel = viewModel)
                         }
                     }
 
@@ -134,6 +180,90 @@ fun MainGameScreen(
                             }
                         }
                     }
+
+                    // Overlay Popup Drawer
+                    if (activeOverlay != null && uiState.activeBattle == null) {
+                        RetroFeatureOverlay(
+                            tab = activeOverlay!!,
+                            uiState = uiState,
+                            viewModel = viewModel,
+                            onClose = { viewModel.openOverlayTab(null) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun RetroFeatureOverlay(
+    tab: String,
+    uiState: GameUiState.Loaded,
+    viewModel: GameViewModel,
+    onClose: () -> Unit
+) {
+    val isNight = uiState.isNightMode
+    val panelBg = if (isNight) Color(0xFF131722) else Color(0xFFFFFDF8)
+    val textPrimary = if (isNight) Color(0xFFECEFF4) else Color(0xFF1E150F)
+    val borderCol = if (isNight) FantasyGold else Color(0xFF8A7E6C)
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.85f))
+            .padding(12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth(0.96f)
+                .fillMaxHeight(0.90f)
+                .background(panelBg)
+                .border(2.dp, Color.Black)
+                .padding(2.dp)
+                .border(1.dp, borderCol)
+                .padding(10.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = when(tab) {
+                        "FORGE" -> "⚔️ ДРЕВНЯЯ КУЗНИЦА ЭФИРА"
+                        "SUMMON" -> "🌀 ПОРТАЛ ПРИЗЫВА БЕЗДНЫ"
+                        "GUILD" -> "⛲ СВЯТИЛИЩЕ ОБЕТОВ"
+                        else -> "ОБЪЕКТ СИЛЫ"
+                    },
+                    color = textPrimary,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontFamily = FontFamily.Monospace,
+                    letterSpacing = 1.sp
+                )
+
+                Button(
+                    onClick = onClose,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC62828)),
+                    shape = RoundedCornerShape(0.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                    modifier = Modifier.height(30.dp)
+                ) {
+                    Text("ЗАКРЫТЬ [X]", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                }
+            }
+
+            Divider(color = Color.Black.copy(alpha = 0.15f), thickness = 2.dp, modifier = Modifier.padding(bottom = 8.dp))
+
+            Box(modifier = Modifier.weight(1f)) {
+                when (tab) {
+                    "FORGE" -> ForgeScreen(state = uiState, viewModel = viewModel)
+                    "SUMMON" -> SummonPortalScreen(state = uiState, viewModel = viewModel)
+                    "GUILD" -> GuildCovenantsScreen(state = uiState, viewModel = viewModel)
                 }
             }
         }
@@ -256,14 +386,15 @@ fun CovenantSelectionScreen(onSelect: (Element) -> Unit) {
                 .height(56.dp)
                 .testTag("covenant_confirm_button"),
             colors = ButtonDefaults.buttonColors(containerColor = FantasyGold),
-            shape = RoundedCornerShape(12.dp)
+            shape = RoundedCornerShape(0.dp)
         ) {
             Text(
                 text = "ПРИНЯТЬ ОБЕТ: ${selectedElement.god.uppercase()}",
                 color = Color.Black,
                 fontWeight = FontWeight.ExtraBold,
                 letterSpacing = 1.sp,
-                fontSize = 15.sp
+                fontSize = 15.sp,
+                fontFamily = FontFamily.Monospace
             )
         }
     }
@@ -276,6 +407,12 @@ fun MapDashboardScreen(state: GameUiState.Loaded, viewModel: GameViewModel) {
     var zoomFactor by remember { mutableStateOf(1.2f) }
     var landmarksExpanded by remember { mutableStateOf(false) }
     var selectedPoi by remember { mutableStateOf<PointOfInterest?>(null) }
+    val isRealGps by viewModel.isRealGpsEnabled.collectAsState()
+    val activeRoutePoiId by viewModel.activeRoutePoiId.collectAsState()
+
+    // Interactive Camera offset states for panning
+    var panX by remember { mutableStateOf(0f) }
+    var panY by remember { mutableStateOf(0f) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -295,7 +432,15 @@ fun MapDashboardScreen(state: GameUiState.Loaded, viewModel: GameViewModel) {
             pois = state.pois,
             viewModel = viewModel,
             zoomFactor = zoomFactor,
-            onPoiTapped = { selectedPoi = it }
+            panX = panX,
+            panY = panY,
+            onPanChanged = { px, py ->
+                panX = px
+                panY = py
+            },
+            onZoomChanged = { zoomFactor = it },
+            onPoiTapped = { selectedPoi = it },
+            isNight = state.isNightMode
         )
 
         // FLOATING TOP BAR: CHRONICLES & ECOSYSTEM TELEMETRY
@@ -310,9 +455,11 @@ fun MapDashboardScreen(state: GameUiState.Loaded, viewModel: GameViewModel) {
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .border(1.dp, FantasyGold.copy(alpha = 0.4f), RoundedCornerShape(12.dp)),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xEB0C0D11)),
-                    shape = RoundedCornerShape(12.dp)
+                        .border(1.5.dp, Color.Black)
+                        .padding(2.dp)
+                        .border(1.dp, if (state.isNightMode) FantasyGold.copy(alpha = 0.4f) else Color(0xFF8A7E6C)),
+                    colors = CardDefaults.cardColors(containerColor = if (state.isNightMode) Color(0xEB0C0D11) else Color(0xEBFFFDF6)),
+                    shape = RoundedCornerShape(0.dp)
                 ) {
                     Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Row(
@@ -324,24 +471,25 @@ fun MapDashboardScreen(state: GameUiState.Loaded, viewModel: GameViewModel) {
                                 Box(
                                     modifier = Modifier
                                         .size(28.dp)
-                                        .clip(CircleShape)
-                                        .background(FantasyGold),
+                                        .background(Color.Black)
+                                        .border(1.dp, FantasyGold),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Text(
                                         text = state.profile.level.toString(),
                                         fontWeight = FontWeight.Black,
-                                        color = Color.Black,
-                                        fontSize = 13.sp,
+                                        color = FantasyGold,
+                                        fontSize = 11.sp,
                                         fontFamily = FontFamily.Monospace
                                     )
                                 }
                                 Column {
                                     Text(
                                         text = "Орден Пробуждения",
-                                        color = Color.White,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold
+                                        color = if (state.isNightMode) Color.White else Color(0xFF1E150F),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = FontFamily.Monospace
                                     )
                                     val maxXP = state.profile.level * 100
                                     val prg = if (maxXP > 0) state.profile.xp.toFloat() / maxXP else 0f
@@ -349,8 +497,7 @@ fun MapDashboardScreen(state: GameUiState.Loaded, viewModel: GameViewModel) {
                                         progress = { prg },
                                         modifier = Modifier
                                             .width(70.dp)
-                                            .height(3.dp)
-                                            .clip(RoundedCornerShape(1.dp)),
+                                            .height(3.dp),
                                         color = FantasyGold,
                                         trackColor = Color.White.copy(alpha = 0.1f)
                                     )
@@ -360,9 +507,8 @@ fun MapDashboardScreen(state: GameUiState.Loaded, viewModel: GameViewModel) {
                             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Box(
                                     modifier = Modifier
-                                        .clip(RoundedCornerShape(4.dp))
                                         .background(Color(state.profile.selectedElement.colorHex).copy(alpha = 0.15f))
-                                        .border(1.dp, Color(state.profile.selectedElement.colorHex), RoundedCornerShape(4.dp))
+                                        .border(1.dp, Color(state.profile.selectedElement.colorHex))
                                         .padding(horizontal = 6.dp, vertical = 2.dp)
                                 ) {
                                     Text(
@@ -375,14 +521,13 @@ fun MapDashboardScreen(state: GameUiState.Loaded, viewModel: GameViewModel) {
                                 }
                                 Box(
                                     modifier = Modifier
-                                        .clip(RoundedCornerShape(4.dp))
-                                        .background(if (state.isNightMode) Color(0xFF1E1035) else Color(0xFF33200B))
-                                        .border(1.dp, if (state.isNightMode) MistPurple else FantasyGold, RoundedCornerShape(4.dp))
+                                        .background(if (state.isNightMode) Color(0xFF1E1035) else Color(0xFFEFE8D3))
+                                        .border(1.dp, if (state.isNightMode) MistPurple else Color(0xFF7E715D))
                                         .padding(horizontal = 6.dp, vertical = 2.dp)
                                 ) {
                                     Text(
-                                        text = if (state.isNightMode) "🌙 Ночь" else "☀️ День",
-                                        color = if (state.isNightMode) MistPurple else FantasyGold,
+                                        text = if (state.isNightMode) "🌙 Ночь Бездны" else "☀️ День Света",
+                                        color = if (state.isNightMode) MistPurple else Color(0xFF5A4D3B),
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 9.sp,
                                         fontFamily = FontFamily.Monospace
@@ -391,7 +536,7 @@ fun MapDashboardScreen(state: GameUiState.Loaded, viewModel: GameViewModel) {
                             }
                         }
 
-                        Divider(color = Color.White.copy(alpha = 0.05f), thickness = 1.dp)
+                        Divider(color = Color.Black.copy(alpha = 0.1f), thickness = 1.dp)
 
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -402,9 +547,9 @@ fun MapDashboardScreen(state: GameUiState.Loaded, viewModel: GameViewModel) {
                                 Icon(Icons.Default.MonetizationOn, "золото", tint = AetherGold, modifier = Modifier.size(13.dp))
                                 Text(
                                     text = "${state.profile.gold}",
-                                    color = Color.White,
+                                    color = if (state.isNightMode) Color.White else Color(0xFF2C1E14),
                                     fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 12.sp,
+                                    fontSize = 11.sp,
                                     fontFamily = FontFamily.Monospace
                                 )
                             }
@@ -412,9 +557,9 @@ fun MapDashboardScreen(state: GameUiState.Loaded, viewModel: GameViewModel) {
                                 Icon(Icons.Default.OfflineBolt, "ядра", tint = IceBlue, modifier = Modifier.size(13.dp))
                                 Text(
                                     text = "${state.profile.abyssalShards}",
-                                    color = Color.White,
+                                    color = if (state.isNightMode) Color.White else Color(0xFF2C1E14),
                                     fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 12.sp,
+                                    fontSize = 11.sp,
                                     fontFamily = FontFamily.Monospace
                                 )
                             }
@@ -424,7 +569,8 @@ fun MapDashboardScreen(state: GameUiState.Loaded, viewModel: GameViewModel) {
                                     text = state.weather.title,
                                     color = Color(state.weather.associatedElement.colorHex),
                                     fontWeight = FontWeight.Bold,
-                                    fontSize = 11.sp
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace
                                 )
                             }
                         }
@@ -433,207 +579,122 @@ fun MapDashboardScreen(state: GameUiState.Loaded, viewModel: GameViewModel) {
             }
         }
 
-        // FLOATING ACTION MENU / ADVENTURE BAR: Zoom, DayNight, Weather
-        Column(
-            modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .padding(end = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            // Zoom In button
-            IconButton(
-                onClick = { if (zoomFactor < 2.5f) zoomFactor += 0.2f },
+        // COMPACT COMPASS D-PAD CRUISE CONTROLLER (Bottom Left)
+        if (!isRealGps) {
+            Card(
                 modifier = Modifier
-                    .size(44.dp)
-                    .background(Color(0xE60D0E15), RoundedCornerShape(12.dp))
-                    .border(
-                        border = BorderStroke(
-                            1.2.dp,
-                            Brush.linearGradient(listOf(FantasyGold, FantasyGold.copy(alpha = 0.2f)))
-                        ),
-                        shape = RoundedCornerShape(12.dp)
-                    )
+                    .align(Alignment.BottomStart)
+                    .padding(start = 12.dp, bottom = 12.dp)
+                    .alpha(0.85f),
+                colors = CardDefaults.cardColors(containerColor = if (state.isNightMode) Color(0xF207080B) else Color(0xF2FFFDF6)),
+                border = BorderStroke(1.5.dp, Color.Black),
+                shape = RoundedCornerShape(0.dp)
             ) {
-                Icon(Icons.Default.ZoomIn, "Zoom In", tint = FantasyGold, modifier = Modifier.size(20.dp))
-            }
-
-            // Zoom Out button
-            IconButton(
-                onClick = { if (zoomFactor > 0.5f) zoomFactor -= 0.2f },
-                modifier = Modifier
-                    .size(44.dp)
-                    .background(Color(0xE60D0E15), RoundedCornerShape(12.dp))
-                    .border(
-                        border = BorderStroke(
-                            1.2.dp,
-                            Brush.linearGradient(listOf(FantasyGold, FantasyGold.copy(alpha = 0.2f)))
-                        ),
-                        shape = RoundedCornerShape(12.dp)
-                    )
-            ) {
-                Icon(Icons.Default.ZoomOut, "Zoom Out", tint = FantasyGold, modifier = Modifier.size(20.dp))
-            }
-
-            // Time shift toggle
-            IconButton(
-                onClick = { viewModel.toggleNightMode() },
-                modifier = Modifier
-                    .size(44.dp)
-                    .background(Color(0xE60D0E15), RoundedCornerShape(12.dp))
-                    .border(
-                        border = BorderStroke(
-                            1.2.dp,
-                            Brush.linearGradient(listOf(FantasyGold, FantasyGold.copy(alpha = 0.2f)))
-                        ),
-                        shape = RoundedCornerShape(12.dp)
-                    )
-            ) {
-                Icon(
-                    imageVector = if (state.isNightMode) Icons.Default.LightMode else Icons.Default.NightsStay,
-                    contentDescription = "DayNight",
-                    tint = FantasyGold,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-
-            // Weather toggle
-            IconButton(
-                onClick = { viewModel.toggleWeatherSimulation() },
-                modifier = Modifier
-                    .size(44.dp)
-                    .background(Color(0xE60D0E15), RoundedCornerShape(12.dp))
-                    .border(
-                        border = BorderStroke(
-                            1.2.dp,
-                            Brush.linearGradient(listOf(FantasyGold, FantasyGold.copy(alpha = 0.2f)))
-                        ),
-                        shape = RoundedCornerShape(12.dp)
-                    )
-            ) {
-                Icon(
-                    imageVector = Icons.Default.CloudQueue,
-                    contentDescription = "WeatherToggle",
-                    tint = FantasyGold,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-        }
-
-        // COMPACT COMPASS D-PAD CRUISE CONTROLLER (Placed at Bottom Left over Map)
-        Card(
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .padding(start = 12.dp, bottom = 72.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xF207080B)),
-            border = BorderStroke(1.2.dp, Brush.verticalGradient(listOf(FantasyGold, Color(0x33E5C158)))),
-            shape = RoundedCornerShape(22.dp)
-        ) {
-            Column(
-                modifier = Modifier.padding(10.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Text(
-                    text = "НАВИГАТОР БЕЗДНЫ",
-                    color = FantasyGold,
-                    fontSize = 8.sp,
-                    fontWeight = FontWeight.Black,
-                    fontFamily = FontFamily.Monospace,
-                    letterSpacing = 1.2.sp
-                )
-
-                // D-Pad Grid
                 Column(
-                    modifier = Modifier.padding(2.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                    modifier = Modifier.padding(10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    IconButton(
-                        onClick = { viewModel.triggerVirtualMove("NORTH") },
-                        modifier = Modifier
-                            .size(36.dp)
-                            .background(Color(0xFF141620), RoundedCornerShape(10.dp))
-                            .border(1.dp, FantasyGold.copy(alpha = 0.35f), RoundedCornerShape(10.dp))
-                    ) {
-                        Icon(Icons.Default.ArrowUpward, "North", tint = IceBlue, modifier = Modifier.size(18.dp))
-                    }
+                    Text(
+                        text = "НАВИГАТОР БЕЗДНЫ",
+                        color = if (state.isNightMode) FantasyGold else Color(0xFF2C1E14),
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Black,
+                        fontFamily = FontFamily.Monospace,
+                        letterSpacing = 1.2.sp
+                    )
 
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    // D-Pad Grid
+                    Column(
+                        modifier = Modifier.padding(2.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         IconButton(
-                            onClick = { viewModel.triggerVirtualMove("WEST") },
+                            onClick = { viewModel.triggerVirtualMove("NORTH") },
                             modifier = Modifier
                                 .size(36.dp)
-                                .background(Color(0xFF141620), RoundedCornerShape(10.dp))
-                                .border(1.dp, FantasyGold.copy(alpha = 0.35f), RoundedCornerShape(10.dp))
+                                .background(if (state.isNightMode) Color(0xFF141620) else Color(0xFFF0E7D5), RoundedCornerShape(0.dp))
+                                .border(1.5.dp, Color.Black)
                         ) {
-                            Icon(Icons.Default.ArrowBack, "West", tint = IceBlue, modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.ArrowUpward, "North", tint = if (state.isNightMode) IceBlue else Color(0xFF2C1E14), modifier = Modifier.size(18.dp))
                         }
 
-                        // Central core crystal glowing sphere
-                        Box(
-                            modifier = Modifier
-                                .size(34.dp)
-                                .background(Brush.radialGradient(listOf(Color(0xFF2A92E0), Color.Transparent)), CircleShape),
-                            contentAlignment = Alignment.Center
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Default.BlurCircular, "Center Core", tint = Color.White, modifier = Modifier.size(16.dp))
+                            IconButton(
+                                onClick = { viewModel.triggerVirtualMove("WEST") },
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .background(if (state.isNightMode) Color(0xFF141620) else Color(0xFFF0E7D5), RoundedCornerShape(0.dp))
+                                    .border(1.5.dp, Color.Black)
+                            ) {
+                                Icon(Icons.Default.ArrowBack, "West", tint = if (state.isNightMode) IceBlue else Color(0xFF2C1E14), modifier = Modifier.size(18.dp))
+                            }
+
+                            // Central glowing crystal sphere
+                            Box(
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .background(Brush.radialGradient(listOf(Color(0xFF2A92E0), Color.Transparent)), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Default.BlurCircular, "Core", tint = Color.White, modifier = Modifier.size(14.dp))
+                            }
+
+                            IconButton(
+                                onClick = { viewModel.triggerVirtualMove("EAST") },
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .background(if (state.isNightMode) Color(0xFF141620) else Color(0xFFF0E7D5), RoundedCornerShape(0.dp))
+                                    .border(1.5.dp, Color.Black)
+                            ) {
+                                Icon(Icons.Default.ArrowForward, "East", tint = if (state.isNightMode) IceBlue else Color(0xFF2C1E14), modifier = Modifier.size(18.dp))
+                            }
                         }
 
                         IconButton(
-                            onClick = { viewModel.triggerVirtualMove("EAST") },
+                            onClick = { viewModel.triggerVirtualMove("SOUTH") },
                             modifier = Modifier
                                 .size(36.dp)
-                                .background(Color(0xFF141620), RoundedCornerShape(10.dp))
-                                .border(1.dp, FantasyGold.copy(alpha = 0.35f), RoundedCornerShape(10.dp))
+                                .background(if (state.isNightMode) Color(0xFF141620) else Color(0xFFF0E7D5), RoundedCornerShape(0.dp))
+                                .border(1.5.dp, Color.Black)
                         ) {
-                            Icon(Icons.Default.ArrowForward, "East", tint = IceBlue, modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.ArrowDownward, "South", tint = if (state.isNightMode) IceBlue else Color(0xFF2C1E14), modifier = Modifier.size(18.dp))
                         }
-                    }
-
-                    IconButton(
-                        onClick = { viewModel.triggerVirtualMove("SOUTH") },
-                        modifier = Modifier
-                            .size(36.dp)
-                            .background(Color(0xFF141620), RoundedCornerShape(10.dp))
-                            .border(1.dp, FantasyGold.copy(alpha = 0.35f), RoundedCornerShape(10.dp))
-                    ) {
-                        Icon(Icons.Default.ArrowDownward, "South", tint = IceBlue, modifier = Modifier.size(18.dp))
                     }
                 }
             }
         }
 
-        // GPS & SENSOR PANEL (Floating Bottom Right over Map)
+        // GPS & SENSOR PANEL (Floating Bottom Right)
         Card(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(end = 12.dp, bottom = 72.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xF207080B)),
-            border = BorderStroke(1.dp, Brush.linearGradient(listOf(IceBlue.copy(0.7f), Color.Transparent))),
-            shape = RoundedCornerShape(14.dp)
+                .padding(end = 12.dp, bottom = 12.dp),
+            colors = CardDefaults.cardColors(containerColor = if (state.isNightMode) Color(0xF207080B) else Color(0xF2FFFDF6)),
+            border = BorderStroke(1.5.dp, Color.Black),
+            shape = RoundedCornerShape(0.dp)
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Icon(
                     imageVector = Icons.Default.GpsFixed,
                     contentDescription = "GPS Portal",
-                    tint = IceBlue,
-                    modifier = Modifier.size(12.dp)
+                    tint = if (state.isNightMode) IceBlue else Color(0xFF7E715D),
+                    modifier = Modifier.size(11.dp)
                 )
                 Text(
-                    text = "ГЕО-ПРИВЯЗКА",
-                    color = Color.White,
+                    text = "GPS-СВЯЗЬ",
+                    color = if (state.isNightMode) Color.White else Color(0xFF2C1E14),
                     fontSize = 8.sp,
                     fontWeight = FontWeight.Black,
-                    fontFamily = FontFamily.Monospace,
-                    letterSpacing = 1.sp
+                    fontFamily = FontFamily.Monospace
                 )
-                val isRealGps by viewModel.isRealGpsEnabled.collectAsState()
                 Switch(
                     checked = isRealGps,
                     onCheckedChange = { checked ->
@@ -647,181 +708,245 @@ fun MapDashboardScreen(state: GameUiState.Loaded, viewModel: GameViewModel) {
                             viewModel.toggleRealGpsTracker(false)
                         }
                     },
-                    modifier = Modifier.scale(0.6f),
+                    modifier = Modifier.scale(0.55f),
                     colors = SwitchDefaults.colors(
                         checkedThumbColor = FantasyGold,
                         checkedTrackColor = IceBlue.copy(0.6f),
-                        uncheckedThumbColor = Color.White.copy(0.4f),
+                        uncheckedThumbColor = Color.Gray,
                         uncheckedTrackColor = Color.White.copy(0.1f)
                     )
                 )
             }
         }
 
-        // SLIDING DRAWER / EXPANDABLE PANEL FOR PORTALS (Prevents interface clutter!)
-        Box(
+        // FLOATING ACTION MENU / ADVENTURE BAR (Right-Side alignment Column)
+        Column(
             modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .padding(start = 12.dp, end = 12.dp, bottom = 6.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(Color(0xFA111317))
-                .border(1.dp, FantasyGold.copy(alpha = if (landmarksExpanded) 0.6f else 0.25f), RoundedCornerShape(16.dp))
+                .align(Alignment.CenterEnd)
+                .padding(end = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                // Interactive Header Pull Tab
-                Row(
+            // COMPASS BUTTON WITH NUMERICAL BADGE
+            Box(contentAlignment = Alignment.TopEnd) {
+                IconButton(
+                    onClick = { landmarksExpanded = !landmarksExpanded },
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { landmarksExpanded = !landmarksExpanded }
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                        .size(46.dp)
+                        .background(if (state.isNightMode) Color(0xFF141622) else Color(0xFFFFFDF5), RoundedCornerShape(0.dp))
+                        .border(BorderStroke(2.dp, Color.Black))
+                        .padding(2.dp)
+                        .border(BorderStroke(1.dp, if (state.isNightMode) FantasyGold else Color(0xFF8A7E6C)))
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Icon(
-                            imageVector = Icons.Default.Explore,
-                            contentDescription = "Explore",
-                            tint = FantasyGold,
-                            modifier = Modifier.size(16.dp)
-                        )
-
-                        Text(
-                            text = "КОМПАС РАЗЛОМОВ БЕЗДНЫ (${state.pois.size} обнаружено)",
-                            color = Color.White,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace,
-                            letterSpacing = 1.sp
-                        )
-                    }
-
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(
-                            text = if (landmarksExpanded) "СВЕРНУТЬ ▲" else "РАЗВЕРНУТЬ ▼",
-                            color = FantasyGold,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
+                    Icon(
+                        imageVector = Icons.Default.Explore,
+                        contentDescription = "Compass Toggle",
+                        tint = if (state.isNightMode) FantasyGold else Color(0xFF2C1E14),
+                        modifier = Modifier.size(24.dp)
+                    )
                 }
 
-                // Smooth Sliding Content
-                AnimatedVisibility(
-                    visible = landmarksExpanded,
-                    enter = expandVertically() + fadeIn(),
-                    exit = shrinkVertically() + fadeOut()
+                // Numerical Badge
+                Box(
+                    modifier = Modifier
+                        .offset(x = 4.dp, y = (-4).dp)
+                        .size(20.dp)
+                        .background(Color.Red, CircleShape)
+                        .border(1.dp, Color.White, CircleShape),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(210.dp)
+                    Text(
+                        text = state.pois.size.toString(),
+                        color = Color.White,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
+
+            // SNAP RECENTER BUTTON
+            IconButton(
+                onClick = {
+                    panX = 0f
+                    panY = 0f
+                },
+                modifier = Modifier
+                    .size(44.dp)
+                    .background(if (state.isNightMode) Color(0xFF141622) else Color(0xFFFFFDF5), RoundedCornerShape(0.dp))
+                    .border(BorderStroke(2.dp, Color.Black))
+                    .padding(2.dp)
+                    .border(BorderStroke(1.dp, if (state.isNightMode) FantasyGold else Color(0xFF2C1E14)))
+            ) {
+                Icon(
+                    imageVector = Icons.Default.MyLocation,
+                    contentDescription = "Recenter Map",
+                    tint = if (state.isNightMode) FantasyGold else Color(0xFF2C1E14),
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+
+            // Zoom In button
+            IconButton(
+                onClick = { if (zoomFactor < 2.5f) zoomFactor += 0.2f },
+                modifier = Modifier
+                    .size(44.dp)
+                    .background(if (state.isNightMode) Color(0xFF141622) else Color(0xFFFFFDF5), RoundedCornerShape(0.dp))
+                    .border(BorderStroke(2.dp, Color.Black))
+                    .padding(2.dp)
+                    .border(BorderStroke(1.dp, if (state.isNightMode) FantasyGold else Color(0xFF8A7E6C)))
+            ) {
+                Icon(Icons.Default.ZoomIn, "Zoom In", tint = if (state.isNightMode) FantasyGold else Color(0xFF2C1E14), modifier = Modifier.size(20.dp))
+            }
+
+            // Zoom Out button
+            IconButton(
+                onClick = { if (zoomFactor > 0.5f) zoomFactor -= 0.2f },
+                modifier = Modifier
+                    .size(44.dp)
+                    .background(if (state.isNightMode) Color(0xFF141622) else Color(0xFFFFFDF5), RoundedCornerShape(0.dp))
+                    .border(BorderStroke(2.dp, Color.Black))
+                    .padding(2.dp)
+                    .border(BorderStroke(1.dp, if (state.isNightMode) FantasyGold else Color(0xFF8A7E6C)))
+            ) {
+                Icon(Icons.Default.ZoomOut, "Zoom Out", tint = if (state.isNightMode) FantasyGold else Color(0xFF2C1E14), modifier = Modifier.size(20.dp))
+            }
+        }
+
+        // COMPACT RETRO PIXELS LANDS DIRECTORY DIALOG (Toggled by clicking the compass circular button above)
+        if (landmarksExpanded) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .padding(16.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                val isNight = state.isNightMode
+                val dialogBg = if (isNight) Color(0xFF131722) else Color(0xFFFFFDF8)
+                val textPrimary = if (isNight) Color(0xFFECEFF4) else Color(0xFF1E150F)
+                val borderCol = if (isNight) FantasyGold else Color(0xFF8A7E6C)
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth(0.92f)
+                        .fillMaxHeight(0.65f)
+                        .background(dialogBg)
+                        .border(2.dp, Color.Black)
+                        .padding(2.dp)
+                        .border(1.dp, borderCol)
+                        .padding(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Divider(color = Color.White.copy(alpha = 0.08f), thickness = 1.dp)
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Icon(
+                                Icons.Default.Explore, "Compass",
+                                tint = if (isNight) FantasyGold else Color(0xFF8A7E6C),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                "РАЗЛОМЫ БЕЗДНЫ (${state.pois.size})",
+                                color = textPrimary,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
 
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        IconButton(
+                            onClick = { landmarksExpanded = false },
+                            modifier = Modifier.size(24.dp)
                         ) {
-                            val listSorted = state.pois.map { poi ->
-                                val dist = viewModel.calculateDistance(
-                                    state.profile.currentLatitude, state.profile.currentLongitude,
-                                    poi.latitude, poi.longitude
-                                )
-                                Pair(poi, dist)
-                            }.sortedBy { it.second }
+                            Icon(Icons.Default.Close, "Close", tint = textPrimary, modifier = Modifier.size(16.dp))
+                        }
+                    }
 
-                            items(listSorted) { (poi, distance) ->
-                                val canEnter = distance <= 50f
-                                Row(
+                    Divider(color = Color.Black.copy(alpha = 0.1f), thickness = 1.dp, modifier = Modifier.padding(vertical = 8.dp))
+
+                    LazyColumn(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        val listSorted = state.pois.map { poi ->
+                            val dist = viewModel.calculateDistance(
+                                state.profile.currentLatitude, state.profile.currentLongitude,
+                                poi.latitude, poi.longitude
+                            )
+                            Pair(poi, dist)
+                        }.sortedBy { it.second }
+
+                        items(listSorted) { (poi, distance) ->
+                            val canEnter = distance <= 50f
+                            val rowColor = if (isNight) Color(0xFF1A1F2C) else Color(0xFFF7F2EB)
+                            val rowText = if (isNight) Color.White else Color(0xFF2C1E14)
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(rowColor)
+                                    .border(1.dp, if (canEnter) Color(poi.element.colorHex) else Color.Transparent)
+                                    .clickable {
+                                        selectedPoi = poi
+                                        landmarksExpanded = false // Close compass menu
+                                    }
+                                    .padding(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
                                     modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .background(CardLighterBg.copy(alpha = 0.6f))
-                                        .border(
-                                            1.dp,
-                                            if (canEnter) Color(poi.element.colorHex) else Color.White.copy(alpha = 0.05f),
-                                            RoundedCornerShape(10.dp)
-                                        )
-                                        .padding(10.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                                        .size(28.dp)
+                                        .background(Color(poi.type.markerColorHex).copy(alpha = 0.15f), CircleShape)
+                                        .border(1.dp, Color(poi.type.markerColorHex), CircleShape),
+                                    contentAlignment = Alignment.Center
                                 ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(34.dp)
-                                            .clip(CircleShape)
-                                            .background(Color(poi.type.markerColorHex).copy(alpha = 0.15f))
-                                            .border(1.dp, Color(poi.type.markerColorHex), CircleShape),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        val ico = when (poi.type) {
-                                            PoiType.RIFT -> Icons.Default.LocalFireDepartment
-                                            PoiType.ABYSSAL_GATE -> Icons.Default.AllInclusive
-                                            PoiType.SANCTUM -> Icons.Default.AccountBalance
-                                            PoiType.CHAOS_SPIKE -> Icons.Default.FlashOn
-                                            PoiType.NEXUS_POINT -> Icons.Default.Token
-                                        }
-                                        Icon(ico, "PoiIcon", tint = Color(poi.type.markerColorHex), modifier = Modifier.size(16.dp))
+                                    val ico = when (poi.type) {
+                                        PoiType.RIFT -> Icons.Default.LocalFireDepartment
+                                        PoiType.ABYSSAL_GATE -> Icons.Default.AllInclusive
+                                        PoiType.SANCTUM -> Icons.Default.AccountBalance
+                                        PoiType.CHAOS_SPIKE -> Icons.Default.FlashOn
+                                        PoiType.NEXUS_POINT -> Icons.Default.Token
+                                        PoiType.MERCHANT_CARAVAN -> Icons.Default.Storefront
+                                        PoiType.TAVERN -> Icons.Default.Restaurant
+                                        PoiType.GUILD_VAULT -> Icons.Default.Key
+                                        PoiType.SACRED_GROVE -> Icons.Default.Spa
+                                        PoiType.RANDOM_ENCOUNTER -> Icons.Default.Help
                                     }
+                                    Icon(ico, null, tint = Color(poi.type.markerColorHex), modifier = Modifier.size(12.dp))
+                                }
 
-                                    Spacer(modifier = Modifier.width(10.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
 
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = poi.name,
-                                            color = Color.White,
-                                            fontSize = 13.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                        Row(
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text(
-                                                text = poi.type.label,
-                                                color = Color(poi.element.colorHex),
-                                                fontSize = 10.sp,
-                                                fontWeight = FontWeight.SemiBold
-                                            )
-                                            Text(
-                                                text = "• ${distance.toInt()}м",
-                                                color = if (canEnter) BloomGreen else Color.White.copy(alpha = 0.4f),
-                                                fontSize = 10.sp
-                                            )
-                                        }
-                                    }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = poi.name,
+                                        color = rowText,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                    Text(
+                                        text = "${poi.type.label} • ${distance.toInt()}м",
+                                        color = if (canEnter) BloomGreen else rowText.copy(alpha = 0.6f),
+                                        fontSize = 9.sp,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                }
 
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                     if (canEnter) {
-                                        Button(
-                                            onClick = {
-                                                if (poi.type == PoiType.SANCTUM) {
-                                                    viewModel.showToast("Вы исцелились в Святилище бога и получили +10 Осколков!")
-                                                    viewModel.claimBattleRewardsExit()
-                                                } else {
-                                                    viewModel.initiatePOICombat(poi)
-                                                }
-                                            },
-                                            colors = ButtonDefaults.buttonColors(containerColor = Color(poi.element.colorHex)),
-                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                                            shape = RoundedCornerShape(8.dp),
-                                            modifier = Modifier.testTag("enter_combat_gate_${poi.id}")
+                                        Box(
+                                            modifier = Modifier
+                                                .background(Color(poi.element.colorHex), RoundedCornerShape(2.dp))
+                                                .padding(horizontal = 6.dp, vertical = 2.dp)
                                         ) {
-                                            Text(
-                                                text = if (poi.type == PoiType.SANCTUM) "ВОЙТИ" else "БОЙ QTE",
-                                                color = Color.Black,
-                                                fontSize = 10.sp,
-                                                fontWeight = FontWeight.Black
-                                            )
+                                            Text("В ЗОНЕ", color = Color.Black, fontSize = 8.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                                         }
                                     } else {
-                                        Text(
-                                            text = "${(distance - 50).toInt()}м до входа",
-                                            fontSize = 9.sp,
-                                            color = Color.White.copy(alpha = 0.4f),
-                                            fontFamily = FontFamily.Monospace
-                                        )
+                                        Icon(Icons.Default.ChevronRight, "Inspect", tint = rowText.copy(alpha = 0.4f), modifier = Modifier.size(14.dp))
                                     }
                                 }
                             }
@@ -841,6 +966,12 @@ fun MapDashboardScreen(state: GameUiState.Loaded, viewModel: GameViewModel) {
                 poi = poi,
                 distance = distance,
                 playerLevel = state.profile.level,
+                activeRoutePoiId = activeRoutePoiId,
+                onToggleRoute = { viewModel.toggleRouteToPoi(poi.id) },
+                onOpenFeature = { feat ->
+                    selectedPoi = null
+                    viewModel.openOverlayTab(feat)
+                },
                 onEnterCombat = {
                     selectedPoi = null
                     if (poi.type == PoiType.SANCTUM) {
@@ -867,6 +998,15 @@ fun getTileY(lat: Double, zoom: Int): Double {
     return (1.0 - Math.log(Math.tan(coercedLatRad) + 1.0 / Math.cos(coercedLatRad)) / PI) / 2.0 * (1 shl zoom)
 }
 
+data class MapPoiRenderItem(
+    val poi: PointOfInterest,
+    val x: Float,
+    val y: Float,
+    val distance: Float,
+    val canEnter: Boolean,
+    val isNearby: Boolean
+)
+
 // 2D CANVAS PERSPECTIVE OF OSM COORDINATES
 @Composable
 fun Fantasy2DMapView(
@@ -875,8 +1015,14 @@ fun Fantasy2DMapView(
     pois: List<PointOfInterest>,
     viewModel: GameViewModel,
     zoomFactor: Float,
-    onPoiTapped: (PointOfInterest) -> Unit
+    panX: Float,
+    panY: Float,
+    onPanChanged: (Float, Float) -> Unit,
+    onZoomChanged: (Float) -> Unit,
+    onPoiTapped: (PointOfInterest) -> Unit,
+    isNight: Boolean
 ) {
+    val activeRoutePoiId by viewModel.activeRoutePoiId.collectAsState()
     val infiniteTransition = rememberInfiniteTransition(label = "RadarPulse")
     
     // Sonar Radar sweep pulse ring
@@ -922,7 +1068,14 @@ fun Fantasy2DMapView(
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF07080B))
+            .background(Color(if (isNight) 0xFF07080B else 0xFFF7F2EB))
+            .pointerInput(zoomFactor, panX, panY) {
+                detectTransformGestures { _, pan, zoomChange, _ ->
+                    onPanChanged(panX + pan.x, panY + pan.y)
+                    val newZoom = (zoomFactor * zoomChange).coerceIn(0.5f, 2.5f)
+                    onZoomChanged(newZoom)
+                }
+            }
     ) {
         val density = LocalDensity.current
         val widthDp = maxWidth
@@ -941,8 +1094,11 @@ fun Fantasy2DMapView(
         val currentX = centerX.toInt()
         val currentY = centerY.toInt()
 
+        val heroX = centerW + panX
+        val heroY = centerH + panY
+
         // Precompute POI Screen coordinates so we can draw and tap reliably
-        val poisWithScreenCoords = remember(pois, centerX, centerY, zoom, zoomFactor, centerW, centerH, tileSizePx) {
+        val poisWithScreenCoords = remember(pois, centerX, centerY, zoom, zoomFactor, centerW, centerH, tileSizePx, playerLat, playerLon, panX, panY) {
             pois.map { poi ->
                 val poiX_tile = getTileX(poi.longitude, zoom)
                 val poiY_tile = getTileY(poi.latitude, zoom)
@@ -950,24 +1106,37 @@ fun Fantasy2DMapView(
                 val dx = (poiX_tile - centerX).toFloat()
                 val dy = (poiY_tile - centerY).toFloat()
 
-                val poiX = centerW + (dx * tileSizePx)
-                val poiY = centerH + (dy * tileSizePx)
-                Triple(poi, poiX, poiY)
+                val poiX = centerW + (dx * tileSizePx) + panX
+                val poiY = centerH + (dy * tileSizePx) + panY
+                
+                val distance = viewModel.calculateDistance(playerLat, playerLon, poi.latitude, poi.longitude)
+                MapPoiRenderItem(
+                    poi = poi,
+                    x = poiX,
+                    y = poiY,
+                    distance = distance,
+                    canEnter = distance <= 50f,
+                    isNearby = distance <= 500f
+                )
             }
         }
 
-        // 1. RENDER BACKGROUND REAL MAP TILES FROM CARTODB (Dark Matter always)
+        // 1. RENDER BACKGROUND REAL MAP TILES FROM CARTODB (Dark or Light depending on environment)
         Box(modifier = Modifier.fillMaxSize()) {
             for (tileX in (currentX - 2)..(currentX + 2)) {
                 for (tileY in (currentY - 2)..(currentY + 2)) {
                     val dx = (tileX - centerX).toFloat()
                     val dy = (tileY - centerY).toFloat()
-                    val leftPx = centerW + (dx * tileSizePx)
-                    val topPx = centerH + (dy * tileSizePx)
+                    val leftPx = centerW + (dx * tileSizePx) + panX
+                    val topPx = centerH + (dy * tileSizePx) + panY
                     val leftDp = with(density) { leftPx.toDp() }
                     val topDp = with(density) { topPx.toDp() }
 
-                    val tileUrl = "https://basemaps.cartocdn.com/rastertiles/dark_all/$zoom/$tileX/$tileY.png"
+                    val tileUrl = if (isNight) {
+                        "https://basemaps.cartocdn.com/rastertiles/dark_all/$zoom/$tileX/$tileY.png"
+                    } else {
+                        "https://basemaps.cartocdn.com/rastertiles/light_all/$zoom/$tileX/$tileY.png"
+                    }
 
                     coil.compose.AsyncImage(
                         model = coil.request.ImageRequest.Builder(LocalContext.current)
@@ -978,7 +1147,8 @@ fun Fantasy2DMapView(
                         modifier = Modifier
                             .size(tileSizeDp)
                             .offset(x = leftDp, y = topDp),
-                        contentScale = ContentScale.FillBounds
+                        contentScale = ContentScale.FillBounds,
+                        colorFilter = if (!isNight) androidx.compose.ui.graphics.ColorFilter.tint(Color(0xFFFFFAF0), androidx.compose.ui.graphics.BlendMode.Multiply) else null
                     )
                 }
             }
@@ -986,9 +1156,23 @@ fun Fantasy2DMapView(
 
         // Overlay a refined vignette gradient to bleed real cartography background with the abyssal interface
         val radialGlow = Brush.radialGradient(
-            colors = listOf(Color.Transparent, Color(0x70000000), Color(0xDD07080B)),
-            center = Offset(centerW, centerH),
-            radius = max(centerW, centerH) * 1.15f
+            colors = if (isNight) {
+                listOf(
+                    Color.Transparent,
+                    Color.Transparent,
+                    Color(0x1506080E),   // 8%
+                    Color(0x4006080E)    // 25% only at the edges
+                )
+            } else {
+                listOf(
+                    Color.Transparent,
+                    Color.Transparent,
+                    Color(0x108A7E6C),
+                    Color(0x258A7E6C)
+                )
+            },
+            center = Offset(heroX, heroY),
+            radius = max(centerW, centerH) * 1.3f
         )
         Box(
             modifier = Modifier
@@ -1000,17 +1184,14 @@ fun Fantasy2DMapView(
         Canvas(
             modifier = Modifier.fillMaxSize()
         ) {
+            val compassGold = if (isNight) ShardsDesign.Gold.copy(alpha = 0.22f) else Color(0x608A7E6C)
+            val indexRingBg = if (isNight) ShardsDesign.Gold.copy(alpha = 0.08f) else Color(0x208A7E6C)
+
             // Compass Dial index ring
             drawCircle(
-                color = FantasyGold.copy(alpha = 0.15f),
+                color = indexRingBg,
                 radius = 150f,
-                center = Offset(centerW, centerH),
-                style = Stroke(width = 1f)
-            )
-            drawCircle(
-                color = FantasyGold.copy(alpha = 0.05f),
-                radius = 280f,
-                center = Offset(centerW, centerH),
+                center = Offset(heroX, heroY),
                 style = Stroke(width = 1f)
             )
 
@@ -1018,15 +1199,15 @@ fun Fantasy2DMapView(
             for (ang in 0..11) {
                 val theta = (ang * 30 * Math.PI / 180).toFloat()
                 val edgeStart = Offset(
-                    centerW + cos(theta) * 142f,
-                    centerH + sin(theta) * 142f
+                    heroX + cos(theta) * 142f,
+                    heroY + sin(theta) * 142f
                 )
                 val edgeEnd = Offset(
-                    centerW + cos(theta) * 150f,
-                    centerH + sin(theta) * 150f
+                    heroX + cos(theta) * 150f,
+                    heroY + sin(theta) * 150f
                 )
                 drawLine(
-                    color = FantasyGold.copy(alpha = 0.22f),
+                    color = compassGold,
                     start = edgeStart,
                     end = edgeEnd,
                     strokeWidth = 1.5f
@@ -1037,19 +1218,19 @@ fun Fantasy2DMapView(
             drawCircle(
                 color = IceBlue.copy(alpha = pulseAlpha),
                 radius = pulseRadius,
-                center = Offset(centerW, centerH),
+                center = Offset(heroX, heroY),
                 style = Stroke(width = 1.6f)
             )
 
             // 3. DRAW LANDMARKS, PORTALS & ALIGNED PROJECTION VECTOR LINES
-            for (item in poisWithScreenCoords) {
-                val poi = item.first
-                val poiX = item.second
-                val poiY = item.third
+            val nativeCanvas = drawContext.canvas.nativeCanvas
 
-                val distance = viewModel.calculateDistance(playerLat, playerLon, poi.latitude, poi.longitude)
-                val canEnter = distance <= 50f
-                val isNearby = distance <= 500f
+            for (item in poisWithScreenCoords) {
+                val poi = item.poi
+                val poiX = item.x
+                val poiY = item.y
+                val canEnter = item.canEnter
+                val isNearby = item.isNearby
 
                 if (poiX in -50f..(size.width + 50f) && poiY in -50f..(size.height + 50f)) {
                     val elementColor = Color(poi.element.colorHex)
@@ -1059,7 +1240,7 @@ fun Fantasy2DMapView(
                     if (isNearby) {
                         drawLine(
                             color = typeColor.copy(alpha = if (canEnter) 0.65f else 0.35f),
-                            start = Offset(centerW, centerH),
+                            start = Offset(heroX, heroY),
                             end = Offset(poiX, poiY),
                             strokeWidth = if (canEnter) 2.5f else 1.2f,
                             pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(
@@ -1068,8 +1249,8 @@ fun Fantasy2DMapView(
                         )
 
                         // Flowing guiding spark dot towards portal
-                        val flowX = (centerW + (poiX - centerW) * guidanceFlow)
-                        val flowY = (centerH + (poiY - centerH) * guidanceFlow)
+                        val flowX = (heroX + (poiX - heroX) * guidanceFlow)
+                        val flowY = (heroY + (poiY - heroY) * guidanceFlow)
                         drawCircle(
                             color = typeColor,
                             radius = 4.5f,
@@ -1135,6 +1316,29 @@ fun Fantasy2DMapView(
                                 style = Stroke(width = 1.2f * zoomFactor)
                             )
                         }
+                        PoiType.MERCHANT_CARAVAN -> {
+                            drawCircle(typeColor, radius = 9f * zoomFactor, center = Offset(poiX, poiY), style = Stroke(width = 2f * zoomFactor))
+                            drawRect(
+                                color = elementColor,
+                                topLeft = Offset(poiX - 4f * zoomFactor, poiY - 4f * zoomFactor),
+                                size = androidx.compose.ui.geometry.Size(8f * zoomFactor, 8f * zoomFactor)
+                            )
+                        }
+                        PoiType.TAVERN -> {
+                            drawCircle(typeColor, radius = 10f * zoomFactor, center = Offset(poiX, poiY), style = Stroke(width = 2.2f * zoomFactor))
+                            drawLine(elementColor, Offset(poiX - 6f * zoomFactor, poiY), Offset(poiX + 6f * zoomFactor, poiY), strokeWidth = 2f * zoomFactor)
+                        }
+                        PoiType.GUILD_VAULT -> {
+                            drawCircle(typeColor, radius = 11f * zoomFactor, center = Offset(poiX, poiY), style = Stroke(width = 1.8f * zoomFactor))
+                            drawCircle(elementColor, radius = 4f * zoomFactor, center = Offset(poiX, poiY))
+                        }
+                        PoiType.SACRED_GROVE -> {
+                            drawCircle(typeColor, radius = 12f * zoomFactor, center = Offset(poiX, poiY), style = Stroke(width = 1.5f * zoomFactor))
+                            drawLine(elementColor, Offset(poiX, poiY - 9f * zoomFactor), Offset(poiX, poiY + 9f * zoomFactor), strokeWidth = 2.5f * zoomFactor)
+                        }
+                        PoiType.RANDOM_ENCOUNTER -> {
+                            drawCircle(typeColor, radius = 8f * zoomFactor, center = Offset(poiX, poiY), style = Stroke(width = 1.6f * zoomFactor))
+                        }
                     }
 
                     // Outer active activation ring
@@ -1144,35 +1348,100 @@ fun Fantasy2DMapView(
                         center = Offset(poiX, poiY),
                         style = Stroke(width = if (canEnter) 2f else 1.2f)
                     )
+
+                    // DRAW LANDMARK NAMEPLATE LABEL
+                    if (poiX in 30f..(size.width - 30f) && poiY in -10f..(size.height - 10f)) {
+                        val namePaint = android.graphics.Paint().apply {
+                            color = if (isNight) android.graphics.Color.argb(220, 240, 235, 224) else android.graphics.Color.argb(220, 30, 21, 15)
+                            textSize = 21f * zoomFactor.coerceIn(0.8f, 1.4f)
+                            typeface = android.graphics.Typeface.create(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD)
+                            isAntiAlias = true
+                            setShadowLayer(4f, 0f, 1f, if (isNight) android.graphics.Color.argb(185, 0, 0, 0) else android.graphics.Color.argb(100, 255, 255, 255))
+                        }
+                        val displayName = if ((poi.realName ?: poi.name).length > 16) {
+                            (poi.realName ?: poi.name).take(14) + "…"
+                        } else {
+                            poi.realName ?: poi.name
+                        }
+                        nativeCanvas.drawText(
+                            displayName,
+                            poiX - namePaint.measureText(displayName) / 2f,
+                            poiY + 30f * zoomFactor + 16f,
+                            namePaint
+                        )
+                    }
+                }
+            }
+
+            // --- DRAW ACTIVE ROUTE LINE TO SELECTED TARGET ---
+            if (activeRoutePoiId != null) {
+                val destPoi = poisWithScreenCoords.find { it.poi.id == activeRoutePoiId }
+                if (destPoi != null) {
+                    // Solid outer highlight path (beautiful epic fantasy neon gold)
+                    drawLine(
+                        color = Color(0xFFD32F2F).copy(alpha = 0.85f), // Red alert path
+                        start = Offset(heroX, heroY),
+                        end = Offset(destPoi.x, destPoi.y),
+                        strokeWidth = 7f * zoomFactor.coerceAtLeast(1f),
+                        pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(
+                            floatArrayOf(24f, 16f),
+                            guidanceFlow * -40f
+                        )
+                    )
+                    drawLine(
+                        color = FantasyGold,
+                        start = Offset(heroX, heroY),
+                        end = Offset(destPoi.x, destPoi.y),
+                        strokeWidth = 3f * zoomFactor.coerceAtLeast(1f),
+                        pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(
+                            floatArrayOf(24f, 16f),
+                            guidanceFlow * -40f
+                        )
+                    )
+                    // Inner glowing focus core pulse
+                    drawLine(
+                        color = Color.White,
+                        start = Offset(heroX, heroY),
+                        end = Offset(destPoi.x, destPoi.y),
+                        strokeWidth = 1f,
+                        pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(
+                            floatArrayOf(24f, 16f),
+                            guidanceFlow * -40f
+                        )
+                    )
                 }
             }
 
             // 4. HERO BEACON COMPASS LABELS & CENTRAL RIPPLE CORE
-            // Compass coordinates markers
-            val nativeCanvas = drawContext.canvas.nativeCanvas
             val paint = android.graphics.Paint().apply {
-                color = android.graphics.Color.argb(165, 229, 193, 88)
+                color = if (isNight) android.graphics.Color.argb((0.7f * 255).toInt(), 212, 168, 67) else android.graphics.Color.argb((0.7f * 255).toInt(), 138, 126, 108)
                 textSize = 21f
-                typeface = android.graphics.Typeface.MONOSPACE
+                typeface = android.graphics.Typeface.create(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD)
                 isAntiAlias = true
             }
-            nativeCanvas.drawText("С", centerW - 6f, centerH - 158f, paint)
-            nativeCanvas.drawText("Ю", centerW - 6f, centerH + 176f, paint)
-            nativeCanvas.drawText("В", centerW + 160f, centerH + 6f, paint)
-            nativeCanvas.drawText("З", centerW - 176f, centerH + 6f, paint)
+            nativeCanvas.drawText("С", heroX - 6f, heroY - 158f, paint)
+            nativeCanvas.drawText("Ю", heroX - 6f, heroY + 176f, paint)
+            nativeCanvas.drawText("В", heroX + 160f, heroY + 6f, paint)
+            nativeCanvas.drawText("З", heroX - 176f, heroY + 6f, paint)
 
             // Hero position pulse
             drawCircle(
-                color = IceBlue.copy(alpha = 0.35f),
-                radius = 24f,
-                center = Offset(centerW, centerH)
+                color = ShardsDesign.Ice.copy(alpha = pulseAlpha * 0.5f),
+                radius = 15f + pulseRadius * 0.05f,
+                center = Offset(heroX, heroY),
+                style = Stroke(width = 2f)
             )
 
             // Inner focus hub
             drawCircle(
-                color = FantasyGold,
-                radius = 7.5f,
-                center = Offset(centerW, centerH)
+                color = if (isNight) ShardsDesign.Gold else Color(0xFF8A7E6C),
+                radius = 6f,
+                center = Offset(heroX, heroY)
+            )
+            drawCircle(
+                color = Color.White,
+                radius = 3f,
+                center = Offset(heroX, heroY)
             )
         }
 
@@ -1182,11 +1451,11 @@ fun Fantasy2DMapView(
                 .fillMaxSize()
                 .pointerInput(poisWithScreenCoords) {
                     detectTapGestures { tapOffset ->
-                        val tappedPoi = poisWithScreenCoords.find { (_, poiX, poiY) ->
-                            val dx = tapOffset.x - poiX
-                            val dy = tapOffset.y - poiY
+                        val tappedPoi = poisWithScreenCoords.find { item ->
+                            val dx = tapOffset.x - item.x
+                            val dy = tapOffset.y - item.y
                             sqrt(dx * dx + dy * dy) < 45f  // tapping radius
-                        }?.first
+                        }?.poi
                         if (tappedPoi != null) {
                             onPoiTapped(tappedPoi)
                         }
@@ -1198,31 +1467,31 @@ fun Fantasy2DMapView(
         Card(
             modifier = Modifier
                 .padding(top = 138.dp, start = 12.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xBE000000)),
-            border = BorderStroke(0.5.dp, FantasyGold.copy(alpha = 0.3f))
+            colors = CardDefaults.cardColors(containerColor = Color(if (isNight) 0xBE000000 else 0xBEFFFDF6)),
+            border = BorderStroke(0.5.dp, (if (isNight) FantasyGold else Color(0xFF8A7E6C)).copy(alpha = 0.3f))
         ) {
             Column(modifier = Modifier.padding(6.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
                 Text(
                     text = "🌐 ЭХО-СПЕКТР РАДАРА",
-                    color = FantasyGold,
+                    color = if (isNight) FantasyGold else Color(0xFF8A7E6C),
                     fontSize = 8.sp,
                     fontWeight = FontWeight.Black
                 )
                 Text(
                     text = "Шир: ${String.format("%.5f", playerLat)}",
-                    color = Color.White.copy(alpha = 0.7f),
+                    color = if (isNight) Color.White.copy(alpha = 0.7f) else Color.Black.copy(alpha = 0.7f),
                     fontSize = 8.sp,
                     fontFamily = FontFamily.Monospace
                 )
                 Text(
                     text = "Дол: ${String.format("%.5f", playerLon)}",
-                    color = Color.White.copy(alpha = 0.7f),
+                    color = if (isNight) Color.White.copy(alpha = 0.7f) else Color.Black.copy(alpha = 0.7f),
                     fontSize = 8.sp,
                     fontFamily = FontFamily.Monospace
                 )
                 Text(
                     text = "Масштаб: ${String.format("%.1fx", zoomFactor)}",
-                    color = IceBlue,
+                    color = if (isNight) IceBlue else Color(0xFF5A4D3B),
                     fontSize = 8.sp,
                     fontFamily = FontFamily.Monospace
                 )
@@ -1238,6 +1507,9 @@ fun PoiDetailBottomSheet(
     poi: PointOfInterest,
     distance: Float,
     playerLevel: Int,
+    activeRoutePoiId: String? = null,
+    onToggleRoute: () -> Unit = {},
+    onOpenFeature: (String) -> Unit = {},
     onEnterCombat: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -1409,6 +1681,77 @@ fun PoiDetailBottomSheet(
                         Text("НАЧАТЬ БОЙ", color = Color.Black, fontWeight = FontWeight.ExtraBold)
                     }
                 }
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            // ИНТЕГРАЦИЯ ТЕРРИТОРИАЛЬНЫХ ФУНКЦИЙ (Кузница, Призыв, Обеты)
+            val associatedFeature = when (poi.type) {
+                PoiType.GUILD_VAULT, PoiType.NEXUS_POINT -> "FORGE"
+                PoiType.ABYSSAL_GATE, PoiType.RIFT -> "SUMMON"
+                PoiType.SANCTUM, PoiType.SACRED_GROVE -> "GUILD"
+                else -> null
+            }
+
+            associatedFeature?.let { feat ->
+                Button(
+                    onClick = { onOpenFeature(feat) },
+                    enabled = canEnter,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                        .border(1.5.dp, Color.Black)
+                        .padding(2.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (canEnter) Color(0xFFD4A843) else Color(0xFF1E293B),
+                        disabledContainerColor = Color(0x301E293B)
+                    ),
+                    shape = RoundedCornerShape(0.dp)
+                ) {
+                    val label = when (feat) {
+                        "FORGE" -> "⚡ ВОЙТИ В КУЗНИЦУ АРСЕНАЛА [FORGE]"
+                        "SUMMON" -> "🌀 АКТИВИРОВАТЬ ПОРТАЛ ПРИЗЫВА [SUMMON]"
+                        "GUILD" -> "⛲ ИЗБРАТЬ ОБЕТ КОВЕНАНТА [COVENANT]"
+                        else -> "ОТКРЫТЬ ФУНКЦИЮ"
+                    }
+                    Text(
+                        text = if (canEnter) label else "🔒 $label (НУЖНО <= 50М)",
+                        color = if (canEnter) Color.Black else Color.White.copy(0.4f),
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp
+                    )
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+            }
+
+            // Кнопка переключения маршрута (сброс / построение четкого маршрута)
+            val isRoutingThis = activeRoutePoiId == poi.id
+            Button(
+                onClick = onToggleRoute,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .testTag("poi_route_button"),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isRoutingThis) Color(0xFFC62828) else Color(0xFF1E293B)
+                ),
+                border = BorderStroke(1.dp, if (isRoutingThis) Color(0xFFE53935) else Color(0xFF334155)),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Icon(
+                    imageVector = if (isRoutingThis) Icons.Default.Cancel else Icons.Default.Navigation,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = if (isRoutingThis) "ОТМЕНИТЬ МАРШРУТ" else "ПОСТРОИТЬ МАРШРУТ",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp
+                )
             }
         }
     }
@@ -2323,9 +2666,6 @@ fun GameBottomNavigationBar(
         val tabs = listOf(
             Triple("MAP", "Радар", Icons.Default.Explore),
             Triple("PARTY", "Хранители", Icons.Default.Shield),
-            Triple("FORGE", "Арсенал", Icons.Default.Build),
-            Triple("SUMMON", "Призыв", Icons.Default.AutoAwesome),
-            Triple("GUILD", "Ковенанты", Icons.Default.Flag),
             Triple("SETTINGS", "Хроники", Icons.Default.Settings)
         )
 
@@ -2703,40 +3043,73 @@ fun CombatArenaLayout(battle: ActiveBattleState, viewModel: GameViewModel) {
             // TURN ACTIONS BAR CONTROLS
             if (!battle.isFinished) {
                 if (isMyTurn) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().height(48.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Button(
-                            onClick = { viewModel.playerTriggerSkillAttack() },
-                            modifier = Modifier.weight(1f).fillMaxHeight().testTag("combat_skill_button"),
-                            colors = ButtonDefaults.buttonColors(containerColor = FantasyGold),
-                            contentPadding = PaddingValues(0.dp)
+                        Row(
+                            modifier = Modifier.fillMaxWidth().height(42.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Icon(Icons.Default.FlashOn, "strike", tint = Color.Black, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("QTE УДАР", color = Color.Black, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
+                            Button(
+                                onClick = { viewModel.playerTriggerStrikeAttack() },
+                                modifier = Modifier.weight(1.2f).fillMaxHeight().testTag("combat_strike_button"),
+                                colors = ButtonDefaults.buttonColors(containerColor = FantasyGold),
+                                contentPadding = PaddingValues(0.dp)
+                            ) {
+                                Icon(Icons.Default.FlashOn, "strike", tint = Color.Black, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text("УДАР СТИХИЙ", color = Color.Black, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp)
+                            }
+
+                            Button(
+                                onClick = { viewModel.playerTriggerUltimateAttack() },
+                                modifier = Modifier.weight(1.2f).fillMaxHeight().testTag("combat_ultimate_button"),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD32F2F)),
+                                contentPadding = PaddingValues(0.dp)
+                            ) {
+                                Icon(Icons.Default.LocalFireDepartment, "ultimate", tint = Color.White, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text("СУПЕРПРИЕМ", color = Color.White, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp)
+                            }
+
+                            Button(
+                                onClick = { viewModel.playerTriggerHeal() },
+                                modifier = Modifier.weight(1f).fillMaxHeight().testTag("combat_heal_button"),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF388E3C)),
+                                contentPadding = PaddingValues(0.dp)
+                            ) {
+                                Icon(Icons.Default.Spa, "heal", tint = Color.White, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text("ИСПРАВИТЬ", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                            }
                         }
 
-                        Button(
-                            onClick = { viewModel.playerDefenseGuard() },
-                            modifier = Modifier.weight(1f).fillMaxHeight(),
-                            colors = ButtonDefaults.buttonColors(containerColor = CardLighterBg),
-                            border = BorderStroke(1.dp, FantasyGold.copy(alpha = 0.5f)),
-                            contentPadding = PaddingValues(0.dp)
+                        Row(
+                            modifier = Modifier.fillMaxWidth().height(42.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Icon(Icons.Default.Shield, "shield", tint = FantasyGold, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("🛡️ БЛОК", color = FantasyGold, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                        }
+                            Button(
+                                onClick = { viewModel.playerDefenseGuard() },
+                                modifier = Modifier.weight(1.5f).fillMaxHeight().testTag("combat_guard_button"),
+                                colors = ButtonDefaults.buttonColors(containerColor = CardLighterBg),
+                                border = BorderStroke(1.dp, FantasyGold.copy(alpha = 0.5f)),
+                                contentPadding = PaddingValues(0.dp)
+                            ) {
+                                Icon(Icons.Default.Shield, "shield", tint = FantasyGold, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("ГЛУХАЯ ОБОРОНА 🛡️", color = FantasyGold, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                            }
 
-                        Button(
-                            onClick = { viewModel.runFromBattle() },
-                            modifier = Modifier.height(48.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color.Red.copy(alpha = 0.4f)),
-                            contentPadding = PaddingValues(horizontal = 12.dp)
-                        ) {
-                            Text("БЕГ", color = Color.White, fontSize = 11.sp)
+                            Button(
+                                onClick = { viewModel.runFromBattle() },
+                                modifier = Modifier.weight(1f).fillMaxHeight().testTag("combat_exit_button"),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.1f)),
+                                border = BorderStroke(0.5.dp, Color.White.copy(alpha = 0.2f)),
+                                contentPadding = PaddingValues(0.dp)
+                            ) {
+                                Text("ОТСТУПИТЬ", color = Color.LightGray, fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                            }
                         }
                     }
                 } else {
@@ -2776,7 +3149,8 @@ fun AttackRingQteWidget(
     // Shrinking radius animation from 1.0f factor down to 0.0f
     val animState = remember { Animatable(1.0f) }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(prompt) {
+        animState.snapTo(1.0f)
         animState.animateTo(
             targetValue = 0.0f,
             animationSpec = tween(1500, easing = LinearEasing)

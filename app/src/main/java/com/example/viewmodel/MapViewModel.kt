@@ -41,21 +41,55 @@ class MapViewModel(
     private var locationCallback: LocationCallback? = null
     private var weatherRotatorJob: Job? = null
 
-    private val okHttpClient = OkHttpClient()
+    private val okHttpClient = OkHttpClient.Builder()
+        .connectTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+        .writeTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
     private val overpassService = OverpassService(okHttpClient)
     private val poiCache = POICache()
+
+    private var lastPoiRefreshLat = 0.0
+    private var lastPoiRefreshLon = 0.0
+    private val POI_REFRESH_DISTANCE = 500.0 // meters
+
+    private val _isLoadingPOIs = MutableStateFlow(false)
+    val isLoadingPOIs: StateFlow<Boolean> = _isLoadingPOIs.asStateFlow()
 
     init {
         // Night mode automatic check
         val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
         _isNight.value = hour < 6 || hour >= 18
 
-        fusedLocationClient = LocationServices.getFusedLocationProviderClient(context)
+        scope.launch {
+            while (true) {
+                val hr = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+                _isNight.value = hr < 6 || hr >= 18
+                delay(15000L) // Auto-recheck every 15 seconds
+            }
+        }
+
+        try {
+            fusedLocationClient = LocationServices.getFusedLocationProviderClient(context)
+        } catch (e: Throwable) {
+            Log.e("ShardsMap", "Failed to access FusedLocationProviderClient", e)
+            fusedLocationClient = null
+        }
+
+        weatherRotatorJob = scope.launch {
+            while (true) {
+                delay(5 * 60 * 1000L) // 5 minutes
+                val nextIndex = (currentWeather.value.ordinal + 1) % WeatherCondition.entries.size
+                _currentWeather.value = WeatherCondition.entries[nextIndex]
+            }
+        }
 
         // Load actual OSM POIs on startup
         scope.launch {
             val prof = repository.getProfileSync()
             if (prof != null) {
+                lastPoiRefreshLat = prof.currentLatitude
+                lastPoiRefreshLon = prof.currentLongitude
                 loadPOIsForPosition(prof.currentLatitude, prof.currentLongitude)
             }
         }
@@ -151,7 +185,13 @@ class MapViewModel(
             val prof = repository.getProfileSync() ?: return@launch
             val updated = prof.copy(currentLatitude = lat, currentLongitude = lon)
             repository.saveProfile(updated)
-            loadPOIsForPosition(lat, lon)
+
+            val dist = calculateDistance(lat, lon, lastPoiRefreshLat, lastPoiRefreshLon)
+            if (dist > POI_REFRESH_DISTANCE) {
+                lastPoiRefreshLat = lat
+                lastPoiRefreshLon = lon
+                loadPOIsForPosition(lat, lon)
+            }
         }
     }
 
@@ -160,17 +200,24 @@ class MapViewModel(
         if (cached != null) {
             return
         }
-        val osmPois = overpassService.fetchPOIsNear(lat, lon)
-        if (osmPois.isNotEmpty()) {
-            poiCache.put(lat, lon, osmPois)
-            repository.savePOIs(osmPois)
-        } else {
-            val dbPois = repository.getAllPOIsSync()
-            if (dbPois.isEmpty()) {
-                generateFallbackPOIs(lat, lon)
+        _isLoadingPOIs.value = true
+        try {
+            val osmPois = overpassService.fetchPOIsNear(lat, lon)
+            if (osmPois.isNotEmpty()) {
+                poiCache.put(lat, lon, osmPois)
+                repository.savePOIs(osmPois)
             } else {
-                poiCache.put(lat, lon, dbPois)
+                val dbPois = repository.getAllPOIsSync()
+                if (dbPois.isEmpty()) {
+                    generateFallbackPOIs(lat, lon)
+                } else {
+                    poiCache.put(lat, lon, dbPois)
+                }
             }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        } finally {
+            _isLoadingPOIs.value = false
         }
     }
 

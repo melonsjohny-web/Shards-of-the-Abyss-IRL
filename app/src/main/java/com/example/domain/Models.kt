@@ -93,7 +93,12 @@ enum class PoiType(val label: String, val markerColorHex: Long, val cooldownMinu
     ABYSSAL_GATE("Врата Бездны", 0xFF9C27B0, 360),
     SANCTUM("Святилище Бога", 0xFF4CAF50, 0),
     CHAOS_SPIKE("Шип Хаоса", 0xFFE91E63, 180),
-    NEXUS_POINT("Узел Силы", 0xFFFFC107, 1440)
+    NEXUS_POINT("Узел Силы", 0xFFFFC107, 1440),
+    MERCHANT_CARAVAN("Торговый Караван Эфира", 0xFFFF9800, 30),
+    TAVERN("Древняя Таверна Эфира", 0xFF795548, 45),
+    GUILD_VAULT("Казначейство Ордена", 0xFF00BCD4, 60),
+    SACRED_GROVE("Священная Роща Мизу", 0xFF4CAF50, 60),
+    RANDOM_ENCOUNTER("Искажение Судьбы", 0xFF9E9E9E, 15)
 }
 
 data class PointOfInterest(

@@ -59,6 +59,13 @@ class GameViewModel(
     private val _currentTab = MutableStateFlow("MAP")
     val currentTab: StateFlow<String> = _currentTab.asStateFlow()
 
+    private val _activeOverlayTab = MutableStateFlow<String?>(null)
+    val activeOverlayTab: StateFlow<String?> = _activeOverlayTab.asStateFlow()
+
+    fun openOverlayTab(tab: String?) {
+        _activeOverlayTab.value = tab
+    }
+
     // Sub-viewmodels split for modularity
     val mapViewModel = MapViewModel(context, repository, viewModelScope, ::showToast)
     val combatViewModel = CombatViewModel(repository, viewModelScope, ::showToast)
@@ -69,6 +76,35 @@ class GameViewModel(
     val currentWeather: StateFlow<WeatherCondition> = mapViewModel.currentWeather
     val isNight: StateFlow<Boolean> = mapViewModel.isNight
     val activeBattle: StateFlow<ActiveBattleState?> = combatViewModel.activeBattle
+
+    // Active routing POI state
+    private val _activeRoutePoiId = MutableStateFlow<String?>(null)
+    val activeRoutePoiId: StateFlow<String?> = _activeRoutePoiId.asStateFlow()
+
+    fun toggleRouteToPoi(poiId: String?) {
+        _activeRoutePoiId.value = if (_activeRoutePoiId.value == poiId) null else poiId
+    }
+
+    // Selected combat companions (additional team members, up to 2)
+    private val _selectedCompanionIds = MutableStateFlow<Set<String>>(emptySet())
+    val selectedCompanionIds: StateFlow<Set<String>> = _selectedCompanionIds.asStateFlow()
+
+    fun toggleCompanion(heroId: String) {
+        val current = _selectedCompanionIds.value
+        if (heroId.startsWith("hero_lead_") || heroId == "hero_lead") {
+            showToast("Ваш Аватар всегда является главой вашего Ордена!")
+            return
+        }
+        if (current.contains(heroId)) {
+            _selectedCompanionIds.value = current - heroId
+        } else {
+            if (current.size >= 2) {
+                showToast("В отряд можно выбрать не более 2 Хранителей-помощников!")
+            } else {
+                _selectedCompanionIds.value = current + heroId
+            }
+        }
+    }
 
     // Feedback toast messages
     private val _feedbackMessage = MutableStateFlow<String?>(null)
@@ -257,11 +293,28 @@ class GameViewModel(
     fun initiatePOICombat(poi: PointOfInterest) {
         // Prevent starting combat if there is already an active battle
         if (combatViewModel.activeBattle.value != null) return
-        combatViewModel.initiatePOICombat(poi)
+        combatViewModel.initiatePOICombat(poi, _selectedCompanionIds.value)
         selectTab("COMBAT_SCREEN")
     }
 
-    fun playerTriggerSkillAttack() = combatViewModel.playerTriggerSkillAttack()
+    fun visitSanctum(poi: PointOfInterest) {
+        viewModelScope.launch {
+            val prof = repository.getProfileSync() ?: return@launch
+            val updatedProfile = prof.copy(
+                abyssalShards = prof.abyssalShards + 10,
+                gold = prof.gold + 50
+            )
+            repository.saveProfile(updatedProfile)
+
+            val cooldownPoi = poi.copy(cooldownUntil = System.currentTimeMillis() + 30 * 60 * 1000L)
+            repository.savePOIs(listOf(cooldownPoi))
+            showToast("Вы исцелились в Святилище! Получено +10 Осколков и +50 Золота ✨")
+        }
+    }
+
+    fun playerTriggerStrikeAttack() = combatViewModel.playerTriggerStrikeAttack()
+    fun playerTriggerUltimateAttack() = combatViewModel.playerTriggerUltimateAttack()
+    fun playerTriggerHeal() = combatViewModel.playerTriggerHeal()
     fun playerFinishQTEHit(successRatio: Float) = combatViewModel.playerFinishQTEHit(successRatio)
     fun feedSwipeResult(correct: Boolean) = combatViewModel.feedSwipeResult(correct)
     fun playerDefenseGuard() = combatViewModel.playerDefenseGuard()
