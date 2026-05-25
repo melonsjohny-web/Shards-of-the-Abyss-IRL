@@ -1545,7 +1545,15 @@ fun PoiDetailBottomSheet(
     val sheetState = rememberModalBottomSheetState()
     val elementColor = Color(poi.element.colorHex)
     val canEnter = distance <= 120f
-    val isOnCooldown = poi.cooldownUntil > System.currentTimeMillis()
+
+    var currentTime by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(poi.id, poi.cooldownUntil) {
+        while (poi.cooldownUntil > currentTime) {
+            delay(1000)
+            currentTime = System.currentTimeMillis()
+        }
+    }
+    val isOnCooldown = poi.cooldownUntil > currentTime
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,

@@ -8,6 +8,7 @@ import android.util.Log
 import com.example.data.GameRepository
 import com.example.data.POICache
 import com.example.data.OverpassService
+import com.example.data.PskovPoiSeed
 import okhttp3.OkHttpClient
 import com.example.domain.*
 import com.google.android.gms.location.*
@@ -125,6 +126,7 @@ class MapViewModel(
 
     @SuppressLint("MissingPermission")
     private fun setupLocationListener() {
+        removeLocationListener()
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 8000)
             .setWaitForAccurateLocation(false)
             .setMinUpdateIntervalMillis(4000)
@@ -218,6 +220,14 @@ class MapViewModel(
         }
         _isLoadingPOIs.value = true
         try {
+            val isPskov = lat in 57.78..57.87 && lon in 28.28..28.42
+            if (isPskov) {
+                val pois = PskovPoiSeed.getAllPskovPOIs()
+                repository.replaceAndSavePOIs(pois)
+                poiCache.put(lat, lon, pois)
+                return
+            }
+
             val nowTime = System.currentTimeMillis()
             val osmPois = if (nowTime - lastOverpassRequestTime >= 4000L) {
                 lastOverpassRequestTime = nowTime
@@ -239,11 +249,18 @@ class MapViewModel(
             }
         } catch (e: Exception) {
             e.printStackTrace()
-            val dbPois = repository.getAllPOIsSync()
-            if (dbPois.isEmpty()) {
-                generateFallbackPOIs(lat, lon)
+            val isPskov = lat in 57.78..57.87 && lon in 28.28..28.42
+            if (isPskov) {
+                val pois = PskovPoiSeed.getAllPskovPOIs()
+                repository.replaceAndSavePOIs(pois)
+                poiCache.put(lat, lon, pois)
             } else {
-                poiCache.put(lat, lon, dbPois)
+                val dbPois = repository.getAllPOIsSync()
+                if (dbPois.isEmpty()) {
+                    generateFallbackPOIs(lat, lon)
+                } else {
+                    poiCache.put(lat, lon, dbPois)
+                }
             }
         } finally {
             _isLoadingPOIs.value = false
@@ -251,6 +268,14 @@ class MapViewModel(
     }
 
     private suspend fun generateFallbackPOIs(lat: Double, lon: Double) {
+        val isPskov = lat in 57.78..57.87 && lon in 28.28..28.42
+        if (isPskov) {
+            val pois = PskovPoiSeed.getAllPskovPOIs()
+            repository.replaceAndSavePOIs(pois)
+            poiCache.put(lat, lon, pois)
+            return
+        }
+
         val namesIce = listOf("Замёрзшая Расселина", "Алтарь Аурелии", "Холодные Врата Эфира")
         val namesBloom = listOf("Цветущая Роща Мизу", "Сады Спокойствия", "Оазис Пробужденных")
         val namesBlaze = listOf("Жертвенный Утес Герра", "Кузница Пепла", "Квартал Гнева Стихии")
@@ -277,7 +302,7 @@ class MapViewModel(
 
             newPois.add(
                 PointOfInterest(
-                    id = "proc_fall_${(lat*1000).toInt()}_${(lon*1000).toInt()}_$i",
+                    id = "proc_fall_${(targetLat * 100000).toInt()}_${(targetLon * 100000).toInt()}_$i",
                     name = rName,
                     type = type,
                     element = element,

@@ -89,11 +89,11 @@ data class GameQuest(
 ) : Serializable
 
 enum class PoiType(val label: String, val markerColorHex: Long, val cooldownMinutes: Int) {
-    RIFT("Разлом Бездны", 0xFFFF5722, 120),
-    ABYSSAL_GATE("Врата Бездны", 0xFF9C27B0, 360),
+    RIFT("Разлом Бездны", 0xFFFF5722, 15),
+    ABYSSAL_GATE("Врата Бездны", 0xFF9C27B0, 30),
     SANCTUM("Святилище Бога", 0xFF4CAF50, 0),
     CHAOS_SPIKE("Шип Хаоса", 0xFFE91E63, 180),
-    NEXUS_POINT("Узел Силы", 0xFFFFC107, 1440),
+    NEXUS_POINT("Узел Силы", 0xFFFFC107, 60),
     MERCHANT_CARAVAN("Торговый Караван Эфира", 0xFFFF9800, 30),
     TAVERN("Древняя Таверна Эфира", 0xFF795548, 45),
     GUILD_VAULT("Казначейство Ордена", 0xFF00BCD4, 60),

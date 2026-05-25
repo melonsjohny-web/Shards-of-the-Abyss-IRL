@@ -187,6 +187,16 @@ class GameViewModel(
         }
     }
 
+    fun onResume() {
+        mapViewModel.onResume()
+        combatViewModel.onResume()
+    }
+
+    fun onPause() {
+        mapViewModel.onPause()
+        combatViewModel.onPause()
+    }
+
     // Tab control
     fun selectTab(tab: String) {
         _currentTab.value = tab
@@ -212,8 +222,8 @@ class GameViewModel(
                 xp = 0,
                 gold = 250,
                 abyssalShards = 15,
-                currentLatitude = 55.7558,
-                currentLongitude = 37.6173,
+                currentLatitude = 57.8203,
+                currentLongitude = 28.3301,
                 activeGuildName = "Первые Пробуждённые",
                 dailyDungeonsCleared = 0,
                 lastClearedDate = System.currentTimeMillis(),
@@ -554,6 +564,17 @@ class GameViewModel(
                     put("lvlReq", g.levelReq)
                     put("power", g.basePower)
                     put("equipped", g.equippedHeroId)
+
+                    val affsArr = JSONArray()
+                    for (aff in g.affixes) {
+                        val affObj = JSONObject().apply {
+                            put("attribute", aff.attribute)
+                            put("value", aff.value)
+                            put("isPercent", aff.isPercent)
+                        }
+                        affsArr.put(affObj)
+                    }
+                    put("affixes", affsArr)
                 }
                 gearArr.put(gJson)
             }
@@ -569,20 +590,23 @@ class GameViewModel(
         viewModelScope.launch {
             try {
                 val root = JSONObject(jsonString)
+                if (!root.has("profile") || !root.has("heroes") || !root.has("gear")) {
+                    throw IllegalArgumentException("Каталог данных поврежден или не является копией Abyss Shards")
+                }
                 val prof = root.getJSONObject("profile")
 
                 val updatedProf = GameProfileEntity(
                      selectedElement = Element.fromString(prof.getString("element")),
-                     level = prof.getInt("level"),
-                     xp = prof.getOptInt("xp", 0),
-                     gold = prof.getInt("gold"),
-                     abyssalShards = prof.getInt("shards"),
+                     level = prof.getInt("level").coerceIn(1, 100),
+                     xp = prof.getOptInt("xp", 0).coerceAtLeast(0),
+                     gold = prof.getInt("gold").coerceIn(0, 99999999),
+                     abyssalShards = prof.getInt("shards").coerceIn(0, 9999999),
                      currentLatitude = prof.getDouble("lat"),
                      currentLongitude = prof.getDouble("lon"),
                      activeGuildName = if (prof.isNull("guild")) null else prof.optString("guild"),
-                     dailyDungeonsCleared = prof.getOptInt("dailyDungeons", 0),
+                     dailyDungeonsCleared = prof.getOptInt("dailyDungeons", 0).coerceIn(0, 3),
                      lastClearedDate = System.currentTimeMillis(),
-                     completedQuestsCount = prof.getOptInt("quests", 0)
+                     completedQuestsCount = prof.getOptInt("quests", 0).coerceAtLeast(0)
                 )
 
                 val heroesArr = root.getJSONArray("heroes")
@@ -594,13 +618,13 @@ class GameViewModel(
                              id = h.getString("id"),
                              name = h.getString("name"),
                              element = Element.fromString(h.getString("element")),
-                             currentLevel = h.getInt("level"),
-                             starRating = h.getInt("star"),
-                             xp = h.getOptInt("xp", 0),
-                             maxHp = h.getInt("maxHp"),
-                             attack = h.getInt("attack"),
-                             defense = h.getInt("defense"),
-                             speed = h.getInt("speed")
+                             currentLevel = h.getInt("level").coerceIn(1, 100),
+                             starRating = h.getInt("star").coerceIn(1, 6),
+                             xp = h.getOptInt("xp", 0).coerceAtLeast(0),
+                             maxHp = h.getInt("maxHp").coerceIn(1, 1000000),
+                             attack = h.getInt("attack").coerceIn(1, 50000),
+                             defense = h.getInt("defense").coerceIn(0, 50000),
+                             speed = h.getInt("speed").coerceIn(1, 1000)
                          )
                      )
                 }
@@ -615,9 +639,9 @@ class GameViewModel(
                              name = g.getString("name"),
                              slot = GearSlot.valueOf(g.getString("slot")),
                              rarity = Rarity.fromString(g.getString("rarity")),
-                             levelReq = g.getInt("lvlReq"),
-                             basePower = g.getInt("power"),
-                             affixes = emptyList(),
+                             levelReq = g.getInt("lvlReq").coerceIn(1, 100),
+                             basePower = g.getInt("power").coerceIn(0, 100000),
+                             affixes = parseBackupAffixes(g),
                              equippedHeroId = if (g.isNull("equipped") || g.getString("equipped").isEmpty()) null else g.getString("equipped")
                          )
                      )
@@ -635,6 +659,24 @@ class GameViewModel(
 
     private fun JSONObject.getOptInt(key: String, fallback: Int): Int {
         return if (has(key)) getInt(key) else fallback
+    }
+
+    private fun parseBackupAffixes(g: JSONObject): List<GearAffix> {
+        val list = mutableListOf<GearAffix>()
+        if (g.has("affixes")) {
+            val arr = g.getJSONArray("affixes")
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                list.add(
+                    GearAffix(
+                        attribute = o.getString("attribute"),
+                        value = o.getInt("value").coerceIn(-50000, 50000),
+                        isPercent = o.optBoolean("isPercent", false)
+                    )
+                )
+            }
+        }
+        return list
     }
 
     override fun onCleared() {

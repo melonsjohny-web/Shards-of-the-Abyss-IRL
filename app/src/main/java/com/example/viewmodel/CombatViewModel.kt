@@ -29,6 +29,22 @@ class CombatViewModel(
     private val combatMutex = Mutex()
     private var lastTickTime: Long = 0
 
+    fun onResume() {
+        scope.launch {
+            combatMutex.withLock {
+                lastTickTime = 0L
+            }
+        }
+    }
+
+    fun onPause() {
+        scope.launch {
+            combatMutex.withLock {
+                lastTickTime = 0L
+            }
+        }
+    }
+
     fun startTicker(isWeatherBoostingElement: (Element) -> Boolean) {
         battleTickerJob?.cancel()
         battleTickerJob = scope.launch(Dispatchers.Default) {
@@ -36,12 +52,12 @@ class CombatViewModel(
                 val current = _activeBattle.value
                 if (current == null || current.isFinished) {
                     delay(500) // Keep idle overhead close to zero
-                    lastTickTime = 0L
+                    combatMutex.withLock { lastTickTime = 0L }
                     continue
                 }
                 if (current.activeUnitUid != null || current.qteState.active) {
                     delay(200) // Sleep during player actions or active QTE
-                    lastTickTime = 0L
+                    combatMutex.withLock { lastTickTime = 0L }
                     continue
                 }
                 delay(100)
@@ -159,93 +175,91 @@ class CombatViewModel(
         }
     }
 
-    private fun tickBattleTimer(isWeatherBoostingElement: (Element) -> Boolean) {
-        scope.launch(Dispatchers.Default) {
-            combatMutex.withLock {
-                val current = _activeBattle.value ?: return@withLock
-                if (current.isFinished || current.activeUnitUid != null || current.qteState.active) {
-                    lastTickTime = 0L
-                    return@withLock
-                }
+    private suspend fun tickBattleTimer(isWeatherBoostingElement: (Element) -> Boolean) {
+        combatMutex.withLock {
+            val current = _activeBattle.value ?: return@withLock
+            if (current.isFinished || current.activeUnitUid != null || current.qteState.active) {
+                lastTickTime = 0L
+                return@withLock
+            }
 
-                val now = System.currentTimeMillis()
-                if (lastTickTime == 0L) {
-                    lastTickTime = now
-                    return@withLock
-                }
-                val deltaSeconds = (now - lastTickTime) / 1000f
+            val now = System.currentTimeMillis()
+            if (lastTickTime == 0L) {
                 lastTickTime = now
+                return@withLock
+            }
+            val deltaSeconds = (now - lastTickTime) / 1000f
+            lastTickTime = now
 
-                val pUnits = current.playerUnits
-                val eUnits = current.enemyUnits
+            val pUnits = current.playerUnits
+            val eUnits = current.enemyUnits
 
-                // Charge AP safely with copies and delta time
-                val updatedPUnits = pUnits.map { unit ->
-                    if (unit.currentHp <= 0) unit
-                    else {
-                        var increment = unit.speed * deltaSeconds
-                        if (isWeatherBoostingElement(unit.element)) {
-                            increment *= 1.25f
-                        }
-                        unit.copy(currentActionPoints = unit.currentActionPoints + increment)
+            // Charge AP safely with copies and delta time
+            val updatedPUnits = pUnits.map { unit ->
+                if (unit.currentHp <= 0) unit
+                else {
+                    var increment = unit.speed * deltaSeconds
+                    if (isWeatherBoostingElement(unit.element)) {
+                        increment *= 1.25f
                     }
+                    unit.copy(currentActionPoints = unit.currentActionPoints + increment)
+                }
+            }
+
+            val updatedEUnits = eUnits.map { unit ->
+                if (unit.currentHp <= 0) unit
+                else {
+                    var increment = unit.speed * deltaSeconds
+                    if (isWeatherBoostingElement(unit.element)) {
+                        increment *= 1.25f
+                    }
+                    unit.copy(currentActionPoints = unit.currentActionPoints + increment)
+                }
+            }
+
+            val nextAct = (updatedPUnits + updatedEUnits)
+                .filter { it.currentHp > 0 && it.currentActionPoints >= 100f }
+                .maxByOrNull { it.currentActionPoints }
+
+            if (nextAct != null) {
+                val clearedNextAct = nextAct.copy(
+                    currentActionPoints = 0f,
+                    statusEffect = if (nextAct.statusEffect == "GUARD") null else nextAct.statusEffect
+                )
+                
+                val finalPUnits = updatedPUnits.map { 
+                    if (it.uid == nextAct.uid) clearedNextAct 
+                    else it 
+                }
+                val finalEUnits = updatedEUnits.map { 
+                    if (it.uid == nextAct.uid) clearedNextAct 
+                    else it 
                 }
 
-                val updatedEUnits = eUnits.map { unit ->
-                    if (unit.currentHp <= 0) unit
-                    else {
-                        var increment = unit.speed * deltaSeconds
-                        if (isWeatherBoostingElement(unit.element)) {
-                            increment *= 1.25f
-                        }
-                        unit.copy(currentActionPoints = unit.currentActionPoints + increment)
-                    }
+                val updateLog = current.combatLog.toMutableList().apply {
+                    add("Ход принадлежит: ${nextAct.name} (${nextAct.element.title})")
                 }
 
-                val nextAct = (updatedPUnits + updatedEUnits)
-                    .filter { it.currentHp > 0 && it.currentActionPoints >= 100f }
-                    .maxByOrNull { it.currentActionPoints }
+                _activeBattle.value = current.copy(
+                    playerUnits = finalPUnits,
+                    enemyUnits = finalEUnits,
+                    activeUnitUid = nextAct.uid,
+                    combatLog = updateLog
+                )
 
-                if (nextAct != null) {
-                    val clearedNextAct = nextAct.copy(
-                        currentActionPoints = 0f,
-                        statusEffect = if (nextAct.statusEffect == "GUARD") null else nextAct.statusEffect
-                    )
-                    
-                    val finalPUnits = updatedPUnits.map { 
-                        if (it.uid == nextAct.uid) clearedNextAct 
-                        else it 
+                lastTickTime = 0L // Pause AP charging during player choice phase
+
+                if (!nextAct.isHero) {
+                    scope.launch {
+                        delay(1200)
+                        triggerMonsterTurn(clearedNextAct)
                     }
-                    val finalEUnits = updatedEUnits.map { 
-                        if (it.uid == nextAct.uid) clearedNextAct 
-                        else it 
-                    }
-
-                    val updateLog = current.combatLog.toMutableList().apply {
-                        add("Ход принадлежит: ${nextAct.name} (${nextAct.element.title})")
-                    }
-
-                    _activeBattle.value = current.copy(
-                        playerUnits = finalPUnits,
-                        enemyUnits = finalEUnits,
-                        activeUnitUid = nextAct.uid,
-                        combatLog = updateLog
-                    )
-
-                    lastTickTime = 0L // Pause AP charging during player choice phase
-
-                    if (!nextAct.isHero) {
-                        scope.launch {
-                            delay(1200)
-                            triggerMonsterTurn(clearedNextAct)
-                        }
-                    }
-                } else {
-                    _activeBattle.value = current.copy(
-                        playerUnits = updatedPUnits,
-                        enemyUnits = updatedEUnits
-                    )
                 }
+            } else {
+                _activeBattle.value = current.copy(
+                    playerUnits = updatedPUnits,
+                    enemyUnits = updatedEUnits
+                )
             }
         }
     }

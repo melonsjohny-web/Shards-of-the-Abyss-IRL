@@ -36,30 +36,6 @@ class MainActivity : ComponentActivity() {
     private var repository: GameRepository? = null
     private var viewModel: GameViewModel? = null
 
-    companion object {
-        @Volatile
-        private var staticDatabase: GameDatabase? = null
-        @Volatile
-        private var staticRepository: GameRepository? = null
-
-        @Synchronized
-        fun getDatabase(context: android.content.Context, migration: Migration): GameDatabase {
-            return staticDatabase ?: Room.databaseBuilder(
-                context.applicationContext,
-                GameDatabase::class.java,
-                "shards_of_abyss_db"
-            )
-            .addMigrations(migration)
-            .fallbackToDestructiveMigration()
-            .build().also { staticDatabase = it }
-        }
-
-        @Synchronized
-        fun getRepository(db: GameDatabase): GameRepository {
-            return staticRepository ?: GameRepository(db.gameDao).also { staticRepository = it }
-        }
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -76,61 +52,10 @@ class MainActivity : ComponentActivity() {
         }
 
         try {
-            val migration1To2 = object : Migration(1, 2) {
-                override fun migrate(db: SupportSQLiteDatabase) {
-                    try {
-                        db.execSQL("ALTER TABLE pois ADD COLUMN osmTags TEXT NOT NULL DEFAULT '{}'")
-                    } catch (e: Exception) {
-                        android.util.Log.w("SHARDS_MIGRATION", "Column osmTags might already exist", e)
-                    }
-                    try {
-                        db.execSQL("ALTER TABLE pois ADD COLUMN realName TEXT")
-                    } catch (e: Exception) {
-                        android.util.Log.w("SHARDS_MIGRATION", "Column realName might already exist", e)
-                    }
-                    try {
-                        db.execSQL("ALTER TABLE pois ADD COLUMN cooldownUntil INTEGER NOT NULL DEFAULT 0")
-                    } catch (e: Exception) {
-                        android.util.Log.w("SHARDS_MIGRATION", "Column cooldownUntil might already exist", e)
-                    }
-                    try {
-                        db.execSQL("CREATE TABLE IF NOT EXISTS poi_cooldowns (poiId TEXT NOT NULL PRIMARY KEY, cooldownUntil INTEGER NOT NULL)")
-                    } catch (e: Exception) {
-                        android.util.Log.w("SHARDS_MIGRATION", "Table poi_cooldowns creation failed or already exists", e)
-                    }
-                    try {
-                        db.execSQL("CREATE INDEX IF NOT EXISTS index_pois_cooldownUntil ON pois(cooldownUntil)")
-                    } catch (e: Exception) {
-                        android.util.Log.w("SHARDS_MIGRATION", "Index index_pois_cooldownUntil on pois failed", e)
-                    }
-                    try {
-                        db.execSQL("CREATE INDEX IF NOT EXISTS index_poi_cooldowns_cooldownUntil ON poi_cooldowns(cooldownUntil)")
-                    } catch (e: Exception) {
-                        android.util.Log.w("SHARDS_MIGRATION", "Index index_poi_cooldowns_cooldownUntil on poi_cooldowns failed", e)
-                    }
-                }
-            }
-
-            // Get/Initialize active static db and repo
-            var db: GameDatabase
-            try {
-                db = getDatabase(applicationContext, migration1To2)
-                db.openHelper.writableDatabase // trigger actual load/migration check
-            } catch (t: Throwable) {
-                android.util.Log.e("SHARDS_INIT", "Database migration/validation failed, performing destructive recovery", t)
-                try {
-                    applicationContext.deleteDatabase("shards_of_abyss_db")
-                } catch (de: Exception) {
-                    android.util.Log.e("SHARDS_INIT", "Failed to clear database files", de)
-                }
-                staticDatabase = null
-                staticRepository = null
-                db = getDatabase(applicationContext, migration1To2)
-                db.openHelper.writableDatabase
-            }
-
+            val app = application as AbyssShardsApplication
+            val db = app.database
+            val repo = app.repository
             database = db
-            val repo = getRepository(db)
             repository = repo
 
             // Instantiate retained ViewModel safely through ViewModelProvider
@@ -206,11 +131,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        viewModel?.mapViewModel?.onResume()
+        viewModel?.onResume()
     }
 
     override fun onPause() {
         super.onPause()
-        viewModel?.mapViewModel?.onPause()
+        viewModel?.onPause()
     }
 }
